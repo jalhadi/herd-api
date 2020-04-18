@@ -1,0 +1,22 @@
+[package]
+name = "graph-analytics"
+version = "0.1.0"
+authors = ["jalhadi <jalhadi@me.com>"]
+edition = "2018"
+
+# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+
+[dependencies]
+actix = "0.9.0"
+actix-web = "2.0.0"
+actix-web-actors = "2.0.0"
+actix-rt = "1.0.0"
+serde = { version = "1.0.43", features = ["derive"] }
+serde_json = "1.0.16"
+actix-web-httpauth = "0.4.1"
+dotenv = "0.15.0"
+chrono = "0.4.11"
+diesel = { version = "1.4.4", features = ["serde_json", "postgres", "r2d2", "chrono"] }
+env_logger = "0.7"
+uuid = { version = "0.8", features = ["v4"] }
+futures = "0.3.4"

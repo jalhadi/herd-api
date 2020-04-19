@@ -178,7 +178,6 @@ pub fn get_components<'a>(
 }
 
 pub fn get_modules<'a>(
-    device_type_id: &'a str,
     parent_id: Option<&'a str>,
     conn: &PgConnection,
 ) -> Vec<ModuleTree> {
@@ -198,7 +197,41 @@ pub fn get_modules<'a>(
     let mut all_module_components = Vec::new();
     for module in modules {
         let module_components = get_components(&module.id, conn);
-        let children = get_modules(device_type_id, Some(&module.id), conn);
+        let children = get_modules(Some(&module.id), conn);
+        all_module_components.push(
+            ModuleTree {
+                id: module.id,
+                device_type_id: module.device_type_id,
+                name: module.name,
+                description: module.description,
+                created_at: module.created_at,
+                updated_at: module.updated_at,
+                components: module_components,
+                children
+            }
+        );
+    }
+    all_module_components
+}
+
+pub fn get_device_modules<'a>(
+    device_type_id: &'a str,
+    conn: &PgConnection,
+) ->  Vec<ModuleTree> {
+    use crate::schema::modules::dsl;
+
+    // TODO: check that device_type_id belongs
+    // to the current account_id
+    let modules = dsl::modules
+        .filter(dsl::parent_id.is_null())
+        .filter(dsl::device_type_id.eq(device_type_id))
+        .load::<models::Module>(conn)
+        .expect("An error occurred");
+
+    let mut all_module_components = Vec::new();
+    for module in modules {
+        let module_components = get_components(&module.id, conn);
+        let children = get_modules(Some(&module.id), conn);
         all_module_components.push(
             ModuleTree {
                 id: module.id,

@@ -104,9 +104,8 @@ struct GetModule {
 async fn get_module_tree(pool: web::Data<db::DbPool>, info: web::Path<GetModule>) -> Result<HttpResponse, Error> {
     let conn = pool.get().expect("Failed to get a db connection");
 
-    let modules = db::get_modules(
+    let modules = db::get_device_modules(
         &info.device_type_id,
-        None,
         &conn,
     );
     Ok(HttpResponse::Ok().content_type("application/json").body(serde_json::to_string(&modules).unwrap()))

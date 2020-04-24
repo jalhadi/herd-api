@@ -3,11 +3,13 @@ use diesel::prelude::*;
 use std::time::SystemTime;
 use std::vec::Vec;
 
+use diesel_migrations::run_pending_migrations;
 use diesel::pg::PgConnection;
 use diesel::r2d2::{ Pool, ConnectionManager };
 use std::env;
 use uuid::Uuid;
 use serde::{Serialize};
+use actix_web::error::{ Error, ErrorUnauthorized };
 
 use crate::models;
 
@@ -19,10 +21,17 @@ fn database_url() -> String {
 
 pub fn init_pool() -> DbPool {
     let manager = ConnectionManager::<PgConnection>::new(database_url());
-    Pool::builder()
+
+    let pool = Pool::builder()
         .max_size(4)
         .build(manager)
-        .expect("db pool")
+        .expect("db pool");
+
+    let conn = pool.get().expect("Failed to get a db connection");
+    // TODO: fail loudly when migrations fail
+    run_pending_migrations(&conn).expect("Failed to run migrations");
+
+    return pool;
 }
 
 /*
@@ -177,23 +186,10 @@ pub fn get_components<'a>(
         .expect("An error occurred")
 }
 
-pub fn get_modules<'a>(
-    parent_id: Option<&'a str>,
+pub fn get_module_vec(
+    modules: Vec<models::Module>,
     conn: &PgConnection,
 ) -> Vec<ModuleTree> {
-    use crate::schema::modules::dsl;
-
-    let modules = match parent_id {
-        Some(x) => dsl::modules
-            .filter(dsl::parent_id.eq(x))
-            .load::<models::Module>(conn)
-            .expect("An error occurred"),
-        None => dsl::modules
-            .filter(dsl::parent_id.is_null())
-            .load::<models::Module>(conn)
-            .expect("An error occurred"),
-    };
-
     let mut all_module_components = Vec::new();
     for module in modules {
         let module_components = get_components(&module.id, conn);
@@ -214,36 +210,48 @@ pub fn get_modules<'a>(
     all_module_components
 }
 
-pub fn get_device_modules<'a>(
-    device_type_id: &'a str,
+pub fn get_modules<'a>(
+    parent_id: Option<&'a str>,
     conn: &PgConnection,
-) ->  Vec<ModuleTree> {
+) -> Vec<ModuleTree> {
     use crate::schema::modules::dsl;
 
-    // TODO: check that device_type_id belongs
-    // to the current account_id
+    let modules = match parent_id {
+        Some(x) => dsl::modules
+            .filter(dsl::parent_id.eq(x))
+            .load::<models::Module>(conn)
+            .expect("An error occurred"),
+        None => dsl::modules
+            .filter(dsl::parent_id.is_null())
+            .load::<models::Module>(conn)
+            .expect("An error occurred"),
+    };
+
+    get_module_vec(modules, conn)
+}
+
+pub fn get_device_modules<'a>(
+    device_type_id: &'a str,
+    account_id: &'a str,
+    conn: &PgConnection,
+) ->  Result<Vec<ModuleTree>, Error> {
+    use crate::schema::device_types;
+    use crate::schema::modules::dsl;
+
+    let device_type = device_types::dsl::device_types
+        .find(device_type_id)
+        .first::<models::DeviceType>(conn)
+        .expect("An error occurred");
+
+    if device_type.account_id != account_id {
+        return Err(ErrorUnauthorized("Account ID does not match that of device type owner"));
+    }
+
     let modules = dsl::modules
         .filter(dsl::parent_id.is_null())
         .filter(dsl::device_type_id.eq(device_type_id))
         .load::<models::Module>(conn)
         .expect("An error occurred");
 
-    let mut all_module_components = Vec::new();
-    for module in modules {
-        let module_components = get_components(&module.id, conn);
-        let children = get_modules(Some(&module.id), conn);
-        all_module_components.push(
-            ModuleTree {
-                id: module.id,
-                device_type_id: module.device_type_id,
-                name: module.name,
-                description: module.description,
-                created_at: module.created_at,
-                updated_at: module.updated_at,
-                components: module_components,
-                children
-            }
-        );
-    }
-    all_module_components
+    Ok(get_module_vec(modules, conn))
 }

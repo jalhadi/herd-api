@@ -101,14 +101,21 @@ struct GetModule {
     device_type_id: String,
 }
 
-async fn get_module_tree(pool: web::Data<db::DbPool>, info: web::Path<GetModule>) -> Result<HttpResponse, Error> {
+async fn get_module_tree(pool: web::Data<db::DbPool>, info: web::Path<GetModule>, r: HttpRequest) -> Result<HttpResponse, Error> {
     let conn = pool.get().expect("Failed to get a db connection");
+    let account_id: &str = r.headers().get("Account-Id").unwrap().to_str().unwrap();
 
     let modules = db::get_device_modules(
         &info.device_type_id,
+        account_id,
         &conn,
     );
-    Ok(HttpResponse::Ok().content_type("application/json").body(serde_json::to_string(&modules).unwrap()))
+    match modules {
+        Ok(result) => Ok(HttpResponse::Ok().content_type("application/json").body(serde_json::to_string(&result).unwrap())),
+        Err(_) => Ok(HttpResponse::Unauthorized().finish()),
+    }
+
+    // Ok(HttpResponse::Ok().content_type("application/json").body(serde_json::to_string(&modules).unwrap()))
 }
 
 async fn get_device_types(pool: web::Data<db::DbPool>, r: HttpRequest) -> Result<HttpResponse, Error> {
@@ -118,7 +125,7 @@ async fn get_device_types(pool: web::Data<db::DbPool>, r: HttpRequest) -> Result
     let device_types = db::get_device_types(account_id, &conn);
     match device_types {
         Ok(result) => Ok(HttpResponse::Ok().content_type("application/json").body(serde_json::to_string(&result).unwrap())),
-        Err(e) => {
+        Err(_) => {
             Ok(HttpResponse::BadRequest().finish())
         },
     }

@@ -13,6 +13,10 @@ mod websocket;
 pub mod schema;
 pub mod models;
 
+async fn health_check() -> HttpResponse {
+    HttpResponse::Ok().finish()
+}
+
 // TODO: better error handling
 async fn ws_index(pool: web::Data<db::DbPool>, r: HttpRequest, stream: web::Payload) -> Result<HttpResponse, Error> {
     // Validate websocket connection
@@ -170,6 +174,7 @@ async fn main() -> std::io::Result<()> {
             // enable logger
             .wrap(middleware::Logger::default())
             .data(db::init_pool())
+            .service(web::resource("/").route(web::get().to(health_check)))
             // websocket route
             .service(web::resource("/ws/").route(web::get().to(ws_index)))
             // .wrap(HttpAuthentication::basic(validator))

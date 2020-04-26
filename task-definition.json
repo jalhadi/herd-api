@@ -56,7 +56,6 @@
     }
   ],
   "placementConstraints": [],
-  // TODO: Increase memory for a task when instance size is incrase
   "memory": "450",
   "taskRoleArn": null,
   "compatibilities": ["EC2"],

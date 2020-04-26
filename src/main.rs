@@ -188,7 +188,9 @@ async fn main() -> std::io::Result<()> {
             .service(web::resource("/modules").route(web::post().to(modules_post)))
             .service(web::resource("/components").route(web::post().to(components_post)))
     })
-    // start http server on 127.0.0.1:8080
+    // TODO: add --release flag to binary such that it can
+    // start on 0.0.0.0:8080 for release and 127.0.0.1:8080
+    // for development
     .bind("0.0.0.0:8080")?
     .run()
     .await

@@ -79,3 +79,4 @@ jobs:
           service: rust-app
           cluster: graph-analytics
           wait-for-service-stability: true
+          wait-for-minutes: 5

@@ -9,6 +9,7 @@ use actix_web_httpauth::middleware::HttpAuthentication;
 mod auth;
 mod db;
 mod websocket;
+mod rate_limiter;
 
 pub mod schema;
 pub mod models;

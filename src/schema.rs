@@ -6,6 +6,7 @@ table! {
         data -> Jsonb,
         created_at -> Timestamp,
         updated_at -> Timestamp,
+        event_created_at -> Timestamp,
     }
 }
 

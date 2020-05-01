@@ -5,6 +5,7 @@ use super::schema::components;
 use super::schema::devices;
 
 use std::time::SystemTime;
+use chrono::{NaiveDateTime};
 use serde_json::Value;
 use diesel::pg::types::sql_types::Jsonb;
 use serde::{Serialize};
@@ -16,6 +17,7 @@ pub struct ComponentEvent {
     pub data: Jsonb,
     pub created_at: SystemTime,
     pub updatd_at: SystemTime,
+    pub event_created_at: SystemTime,
 }
 
 #[derive(Insertable)]
@@ -24,6 +26,7 @@ pub struct NewComponentEvent<'a> {
     pub component_id: &'a str,
     pub device_id: &'a str,
     pub data: Value,
+    pub event_created_at: NaiveDateTime,
 }
 
 #[derive(Queryable, Serialize)]

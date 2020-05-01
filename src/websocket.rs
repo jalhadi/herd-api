@@ -4,6 +4,7 @@ use actix_web::{web};
 use actix_web_actors::ws;
 use serde_json::{Result as SerdeResult, Value};
 use serde::{Deserialize};
+use chrono::{NaiveDateTime};
 
 use crate::db;
 use crate::rate_limiter::RateLimit;
@@ -63,11 +64,17 @@ impl WebSocket {
     }
 }
 
+#[derive(Deserialize)]
+struct Data {
+    component_id: String,
+    json: Value,
+}
 
 #[derive(Deserialize)]
-struct DataType {
-    component_id: String,
-    data: Value,
+struct Event {
+    seconds_since_unix: u64,
+    nano_seconds: u32,
+    data: Data
 }
 
 impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocket {
@@ -76,6 +83,7 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocket {
         msg: Result<ws::Message, ws::ProtocolError>,
         ctx: &mut Self::Context,
     ) {
+        println!("{:?}", msg);
         match msg {
             Ok(ws::Message::Ping(msg)) => {
                 self.hb = Instant::now();
@@ -92,25 +100,36 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocket {
                     return;
                 }
 
-                let json_message: SerdeResult<DataType> = serde_json::from_str(&text);
+                let maybe_event: SerdeResult<Event> = serde_json::from_str(&text);
 
-                match json_message {
-                    Ok(json) => {
+                match maybe_event {
+                    Ok(event) => {
                         println!("Successful message from {}", self.account_id);
-                        println!("ID: {}", json.component_id);
-                        println!("{}", json.data);
+                        println!("ID: {}", event.data.component_id);
+                        println!("{}", event.data.component_id);
                         let conn = self.pool.get().expect("Failed to get a db connection");
 
-                        db::insert_event(
-                            &json.component_id,
+                        let event_timestamp = NaiveDateTime::from_timestamp(
+                            event.seconds_since_unix as i64,
+                            event.nano_seconds
+                        );
+
+                        let insert_result = db::insert_event(
+                            &event.data.component_id,
                             &self.device_id,
-                            json.data,
+                            event.data.json,
+                            event_timestamp,
                             &conn
-                        ).expect("Failed to perfrom insert");
+                        );
+
+                        match insert_result {
+                            Ok(_) => println!("Insert successful."),
+                            Err(_) => println!("Insert failed."),
+                        }
                     }
                     Err(err) => {
                         // TODO: return a useful error message
-                        println!("{:?}", err);
+                        println!("JSON parse error: {:?}", err);
                     }
                 }
                 ctx.text(text);

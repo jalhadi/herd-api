@@ -124,8 +124,12 @@ pub fn create_device<'a>(
         device_type_id,
     };
 
+    println!("{:?}", new_device);
+
     diesel::insert_into(devices::table)
         .values(&new_device)
+        // TODO: this is broken, on conflist do nothing
+        // surpresses all errors
         .on_conflict_do_nothing()
         .execute(conn)?;
     Ok(())
@@ -147,6 +151,8 @@ pub fn insert_event<'a>(
         event_created_at
     };
 
+    // TODO: check that inputing an event with a component_id
+    // not belonging to a device fails
     diesel::insert_into(component_events::table).values(&new_item).execute(conn)?;
 
     Ok(())

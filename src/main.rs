@@ -119,8 +119,6 @@ async fn get_module_tree(pool: web::Data<db::DbPool>, info: web::Path<GetModule>
         Ok(result) => Ok(HttpResponse::Ok().content_type("application/json").body(serde_json::to_string(&result).unwrap())),
         Err(_) => Ok(HttpResponse::Unauthorized().finish()),
     }
-
-    // Ok(HttpResponse::Ok().content_type("application/json").body(serde_json::to_string(&modules).unwrap()))
 }
 
 async fn get_device_types(pool: web::Data<db::DbPool>, r: HttpRequest) -> Result<HttpResponse, Error> {

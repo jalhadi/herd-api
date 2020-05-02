@@ -97,7 +97,7 @@ pub struct Devices {
     pub updated_at: SystemTime,
 }
 
-#[derive(Insertable)]
+#[derive(Insertable, Debug)]
 #[table_name = "devices"]
 pub struct NewDevice<'a> {
     pub id: &'a str,

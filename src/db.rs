@@ -1,7 +1,6 @@
-use serde_json::Value;
+use diesel::dsl::{exists, select};
 use diesel::prelude::*;
 use std::time::SystemTime;
-use chrono::NaiveDateTime;
 use std::vec::Vec;
 
 use diesel_migrations::run_pending_migrations;
@@ -10,7 +9,6 @@ use diesel::r2d2::{ Pool, ConnectionManager };
 use std::env;
 use uuid::Uuid;
 use serde::{Serialize};
-use actix_web::error::{ Error, ErrorUnauthorized };
 
 use crate::models;
 
@@ -34,14 +32,6 @@ pub fn init_pool() -> DbPool {
 
     return pool;
 }
-
-/*
-    Functions needed:
-        - insert device_type
-        - insert device
-        - insert module
-        - insert component
-*/
 
 fn generate_random_uuid () -> String {
     Uuid::new_v4().to_simple().to_string()
@@ -72,46 +62,6 @@ pub fn create_device_type<'a>(
     Ok(())
 }
 
-pub fn create_module<'a>(
-    name: &'a str,
-    device_type_id: &'a str,
-    parent_id: Option<&'a str>,
-    description: Option<&'a str>,
-    conn: &PgConnection,
-) -> Result<(), diesel::result::Error> {
-    use crate::schema::modules;
-    let id = format!("mod_{}", generate_random_uuid());
-    let new_module = models::NewModule {
-        id: &id,
-        name,
-        device_type_id,
-        parent_id,
-        description,
-    };
-
-    diesel::insert_into(modules::table).values(&new_module).execute(conn)?;    
-    Ok(())
-}
-
-pub fn create_component<'a>(
-    name: &'a str,
-    module_type_id: &'a str,
-    description: Option<&'a str>,
-    conn: &PgConnection,
-) -> Result<(), diesel::result::Error> {
-    use crate::schema::components;
-    let id = format!("com_{}", generate_random_uuid());
-    let new_component = models::NewComponent {
-        id: &id,
-        name,
-        description,
-        module_type_id,
-    };
-
-    diesel::insert_into(components::table).values(&new_component).execute(conn)?;    
-    Ok(())   
-}
-
 pub fn create_device<'a>(
     id: &'a str,
     device_type_id: &'a str,
@@ -124,7 +74,7 @@ pub fn create_device<'a>(
         device_type_id,
     };
 
-    println!("{:?}", new_device);
+    println!("New device {:?}", new_device);
 
     diesel::insert_into(devices::table)
         .values(&new_device)
@@ -135,69 +85,12 @@ pub fn create_device<'a>(
     Ok(())
 }
 
-pub fn insert_event<'a>(
-    component_id: &'a str,
-    device_id: &'a str,
-    data: Value,
-    event_created_at: NaiveDateTime,
-    conn: &PgConnection
-) -> Result<(), diesel::result::Error> {
-    use crate::schema::component_events;
-
-    let new_item = models::NewComponentEvent {
-        component_id,
-        device_id,
-        data,
-        event_created_at
-    };
-
-    // TODO: check that inputing an event with a component_id
-    // not belonging to a device fails
-    diesel::insert_into(component_events::table).values(&new_item).execute(conn)?;
-
-    Ok(())
-}
-
-/* START STATISTICS */
-fn get_module_count<'a>(
-    device_type_id: &'a str,
-    conn: &PgConnection,
-) -> u64 {
-    use crate::schema::modules::dsl as module_dsl;
-    use diesel::dsl;
-
-    module_dsl::modules
-        .filter(module_dsl::device_type_id.eq(device_type_id))
-        .select(dsl::count_star())
-        .first::<i64>(conn)
-        .expect("An error occurred") as u64
-}
-
-fn get_component_count<'a>(
-    device_type_id: &'a str,
-    conn: &PgConnection,
-) -> u64 {
-    use crate::schema::modules::dsl as module_dsl;
-    use crate::schema::components::dsl as component_dsl;
-    use diesel::dsl;
-
-    component_dsl::components
-        .left_join(module_dsl::modules)
-        .filter(module_dsl::device_type_id.eq(device_type_id))
-        .select(dsl::count_star())
-        .first::<i64>(conn)
-        .expect("An error occurred") as u64
-}
-/* END STATISTICS */
-
 #[derive(Debug, Serialize)]
 pub struct DeviceType {
     pub id: String,
     pub name: String,
     pub description: Option<String>,
     pub created_at: u64,
-    pub module_count: u64,
-    pub component_count: u64,
 }
 
 pub fn get_device_types<'a>(
@@ -219,8 +112,6 @@ pub fn get_device_types<'a>(
                 name: device_type.name,
                 description: device_type.description,
                 created_at: instant_to_seconds(device_type.created_at),
-                module_count: get_module_count(&device_type.id, conn),
-                component_count: get_component_count(&device_type.id, conn),
             }
         );
     }
@@ -229,100 +120,245 @@ pub fn get_device_types<'a>(
 }
 
 #[derive(Debug, Serialize)]
-pub struct ModuleTree {
+pub struct TopicType {
     pub id: String,
-    pub device_type_id: String,
+    pub account_id: String,
     pub name: String,
     pub description: Option<String>,
     pub created_at: u64,
     pub updated_at: u64,
-    pub components: Vec<models::Component>,
-    pub children: Vec<ModuleTree>,
 }
 
-#[derive(Debug, Serialize)]
-pub struct DeviceTree {
-    pub modules: Vec<ModuleTree>,
-}
-
-pub fn get_components<'a>(
-    module_id: &'a str,
+pub fn get_topics<'a>(
+    account_id: &'a str,
     conn: &PgConnection,
-) -> Vec<models::Component> {
-    use crate::schema::components::dsl;
+) -> Vec<TopicType> {
+    use crate::schema::topics::dsl;
 
-    dsl::components
-        .filter(dsl::module_type_id.eq(module_id))
-        .load::<models::Component>(conn)
-        .expect("An error occurred")
-}
+    let result = dsl::topics
+        .filter(dsl::account_id.eq(account_id))
+        .load::<models::Topic>(conn)
+        .expect("An error occurred");
 
-pub fn get_module_vec(
-    modules: Vec<models::Module>,
-    conn: &PgConnection,
-) -> Vec<ModuleTree> {
-    let mut all_module_components = Vec::new();
-    for module in modules {
-        let module_components = get_components(&module.id, conn);
-        let children = get_modules(Some(&module.id), conn);
-        all_module_components.push(
-            ModuleTree {
-                id: module.id,
-                device_type_id: module.device_type_id,
-                name: module.name,
-                description: module.description,
-                created_at: instant_to_seconds(module.created_at),
-                updated_at: instant_to_seconds(module.updated_at),
-                components: module_components,
-                children
+    let mut all_topics = Vec::new();
+    for topic in result {
+        all_topics.push(
+            TopicType {
+                id: topic.id,
+                account_id: topic.account_id,
+                name: topic.name,
+                description: topic.description,
+                created_at: instant_to_seconds(topic.created_at),
+                updated_at: instant_to_seconds(topic.updated_at),
             }
         );
     }
-    all_module_components
+
+    all_topics
 }
 
-pub fn get_modules<'a>(
-    parent_id: Option<&'a str>,
+pub fn create_topic<'a>(
+    name: &'a str,
+    account_id: &'a str,
+    description: Option<&'a str>,
     conn: &PgConnection,
-) -> Vec<ModuleTree> {
-    use crate::schema::modules::dsl;
+) -> Result<(), diesel::result::Error> {
+    use crate::schema::topics;
 
-    let modules = match parent_id {
-        Some(x) => dsl::modules
-            .filter(dsl::parent_id.eq(x))
-            .load::<models::Module>(conn)
-            .expect("An error occurred"),
-        None => dsl::modules
-            .filter(dsl::parent_id.is_null())
-            .load::<models::Module>(conn)
-            .expect("An error occurred"),
+    let id = format!("top_{}", generate_random_uuid());
+    let new_topic = models::NewTopic {
+        id: &id,
+        name,
+        account_id,
+        description,
     };
 
-    get_module_vec(modules, conn)
+    diesel::insert_into(topics::table)
+        .values(&new_topic)
+        .execute(conn)?;
+    Ok(())
 }
 
-pub fn get_device_modules<'a>(
-    device_type_id: &'a str,
+pub fn topic_relation_exists<'a>(
+    account_id: &'a str,
+    topic_id: &'a str,
+    conn: &PgConnection
+) -> bool {
+    use crate::schema::topics::dsl;
+
+    let result = select(exists(
+        dsl::topics.filter(dsl::id.eq(topic_id)).filter(dsl::account_id.eq(account_id))))
+        .get_result::<bool>(conn);
+    match result {
+        Ok(true) => true,
+        _ => false,
+    }
+}
+
+pub fn create_webhook<'a>(
+    account_id: &'a str,
+    url: &'a str,
+    conn: &PgConnection,
+) -> Result<(), diesel::result::Error> {
+    use crate::schema::webhooks;
+
+    let new_webhook = models::NewWebhook {
+        account_id,
+        url
+    };
+
+    diesel::insert_into(webhooks::table)
+        .values(&new_webhook)
+        .execute(conn)?;
+
+    Ok(())
+}
+
+pub fn delete_webhook<'a>(
+    webhook_id: i32,
+    conn: &PgConnection,
+) -> Result<(), diesel::result::Error> {
+    use crate::schema::webhook_topics::dsl as webhook_topics_dsl;
+    use crate::schema::webhooks::dsl as webhooks_dsl;
+
+    // Need to delete all topic associations before deleting
+    // the webhook
+    diesel::delete(webhook_topics_dsl::webhook_topics.filter(webhook_topics_dsl::webhook_id.eq(&webhook_id)))
+        .execute(conn)?;
+
+    // Delete the webhook
+    diesel::delete(webhooks_dsl::webhooks.filter(webhooks_dsl::id.eq(&webhook_id)))
+        .execute(conn)?;
+
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+pub struct WebhookType {
+    pub id: i32,
+    pub account_id: String,
+    pub url: String,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+pub fn get_webhooks<'a>(
     account_id: &'a str,
     conn: &PgConnection,
-) ->  Result<Vec<ModuleTree>, Error> {
-    use crate::schema::device_types;
-    use crate::schema::modules::dsl;
+) -> Vec<WebhookType> {
+    use crate::schema::webhooks::dsl;
 
-    let device_type = device_types::dsl::device_types
-        .find(device_type_id)
-        .first::<models::DeviceType>(conn)
+    let result = dsl::webhooks
+        .filter(dsl::account_id.eq(account_id))
+        .load::<models::Webhook>(conn)
         .expect("An error occurred");
 
-    if device_type.account_id != account_id {
-        return Err(ErrorUnauthorized("Account ID does not match that of device type owner"));
+    let mut all_webhooks = Vec::new();
+    for webhook in result {
+        all_webhooks.push(
+            WebhookType {
+                id: webhook.id,
+                account_id: webhook.account_id,
+                url: webhook.url,
+                created_at: instant_to_seconds(webhook.created_at),
+                updated_at: instant_to_seconds(webhook.updated_at),
+            }
+        );
     }
 
-    let modules = dsl::modules
-        .filter(dsl::parent_id.is_null())
-        .filter(dsl::device_type_id.eq(device_type_id))
-        .load::<models::Module>(conn)
-        .expect("An error occurred");
+    all_webhooks
+}
 
-    Ok(get_module_vec(modules, conn))
+pub fn create_webhook_topic<'a>(
+    webhook_id: i32,
+    topic_id: &'a str,
+    conn: &PgConnection
+) -> Result<(), diesel::result::Error> {
+    use crate::schema::webhook_topics;
+
+    let new_webhook_topic = models::NewWebhookTopic {
+        webhook_id,
+        topic_id
+    };
+
+    diesel::insert_into(webhook_topics::table)
+        .values(&new_webhook_topic)
+        .execute(conn)?;
+
+    Ok(())
+}
+
+pub fn delete_webhook_topic<'a>(
+    id: i32,
+    conn: &PgConnection,
+) -> Result<(), diesel::result::Error> {
+    use crate::schema::webhook_topics::dsl;
+
+    diesel::delete(dsl::webhook_topics.filter(
+        dsl::id.eq(id)))
+        .execute(conn)?;
+
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+pub struct WebhookTopic {
+    pub id: i32,
+    pub webhook_id: i32,
+    pub topic_id: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub created_at: u64,
+    pub updated_at: u64,
+}
+
+pub fn get_webhook_topics<'a>(
+    webhook_id: i32,
+    conn: &PgConnection
+) -> Vec<WebhookTopic> {
+    use crate::schema::webhook_topics;
+    use crate::schema::topics;
+
+    let join = webhook_topics::table.inner_join(topics::table);
+
+    let result = join
+        .filter(webhook_topics::dsl::webhook_id.eq(webhook_id))
+        .select((
+            webhook_topics::dsl::id,
+            webhook_topics::dsl::webhook_id,
+            topics::dsl::id,
+            topics::dsl::name,
+            topics::dsl::description,
+            topics::dsl::created_at,
+            topics::dsl::updated_at
+        ))
+        .load::<(i32, i32, String, String, Option<String>, SystemTime, SystemTime)>(conn)
+        .expect("An error occured.");
+
+    let mut all_topics = Vec::new();
+    for topic in result {
+        all_topics.push(
+            WebhookTopic {
+                id: topic.0,
+                webhook_id: topic.1,
+                topic_id: topic.2,
+                name: topic.3,
+                description: topic.4,
+                created_at: instant_to_seconds(topic.5),
+                updated_at: instant_to_seconds(topic.6)
+            }
+        );
+    }
+
+    all_topics
+}
+
+pub fn get_all_webhook_topics<'a>(conn: &PgConnection) -> Result<Vec<(String, String)>, diesel::result::Error>  {
+    use crate::schema::webhook_topics;
+    use crate::schema::webhooks;
+
+    let join = webhook_topics::table.inner_join(webhooks::table);
+    join
+        .select((webhook_topics::dsl::topic_id, webhooks::dsl::url))
+        .load::<(String, String)>(conn)
 }

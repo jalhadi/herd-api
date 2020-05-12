@@ -1,27 +1,4 @@
 table! {
-    component_events (id) {
-        id -> Int4,
-        component_id -> Varchar,
-        device_id -> Varchar,
-        data -> Jsonb,
-        created_at -> Timestamp,
-        updated_at -> Timestamp,
-        event_created_at -> Timestamp,
-    }
-}
-
-table! {
-    components (id) {
-        id -> Varchar,
-        module_type_id -> Varchar,
-        name -> Varchar,
-        created_at -> Timestamp,
-        updated_at -> Timestamp,
-        description -> Nullable<Varchar>,
-    }
-}
-
-table! {
     device_types (id) {
         id -> Varchar,
         account_id -> Varchar,
@@ -42,27 +19,44 @@ table! {
 }
 
 table! {
-    modules (id) {
+    topics (id) {
         id -> Varchar,
-        device_type_id -> Varchar,
+        account_id -> Varchar,
         name -> Varchar,
+        description -> Nullable<Varchar>,
         created_at -> Timestamp,
         updated_at -> Timestamp,
-        parent_id -> Nullable<Varchar>,
-        description -> Nullable<Varchar>,
     }
 }
 
-joinable!(component_events -> components (component_id));
-joinable!(component_events -> devices (device_id));
-joinable!(components -> modules (module_type_id));
+table! {
+    webhook_topics (id) {
+        id -> Int4,
+        webhook_id -> Int4,
+        topic_id -> Varchar,
+        created_at -> Timestamp,
+        updated_at -> Timestamp,
+    }
+}
+
+table! {
+    webhooks (id) {
+        id -> Int4,
+        account_id -> Varchar,
+        url -> Varchar,
+        created_at -> Timestamp,
+        updated_at -> Timestamp,
+    }
+}
+
 joinable!(devices -> device_types (device_type_id));
-joinable!(modules -> device_types (device_type_id));
+joinable!(webhook_topics -> topics (topic_id));
+joinable!(webhook_topics -> webhooks (webhook_id));
 
 allow_tables_to_appear_in_same_query!(
-    component_events,
-    components,
     device_types,
     devices,
-    modules,
+    topics,
+    webhook_topics,
+    webhooks,
 );

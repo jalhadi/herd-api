@@ -1,15 +1,25 @@
 #[macro_use]
 extern crate diesel;
 
+use actix;
+use actix::prelude::*;
 use actix_web::{middleware, web, App, Error, HttpRequest, HttpResponse, HttpServer};
 use actix_web_actors::ws;
 use serde::{Deserialize};
+use std::thread;
+use actix_web::client::Client;
+use futures::future::{join_all};
 use actix_web_httpauth::middleware::HttpAuthentication;
+use std::sync::mpsc::channel;
+
+use crate::webhook_publisher::WebhookMessage;
 
 mod auth;
 mod db;
 mod websocket;
 mod rate_limiter;
+mod publisher;
+mod webhook_publisher;
 
 pub mod schema;
 pub mod models;
@@ -19,7 +29,12 @@ async fn health_check() -> HttpResponse {
 }
 
 // TODO: better error handling
-async fn ws_index(pool: web::Data<db::DbPool>, r: HttpRequest, stream: web::Payload) -> Result<HttpResponse, Error> {
+async fn ws_index(
+    pool: web::Data<db::DbPool>,
+    r: HttpRequest,
+    stream: web::Payload,
+    publish: web::Data<Addr<publisher::Publisher>>
+) -> Result<HttpResponse, Error> {
     // Validate websocket connection
     let account_id = auth::authenticate_websocket_connection(&r).await?;
 
@@ -33,7 +48,12 @@ async fn ws_index(pool: web::Data<db::DbPool>, r: HttpRequest, stream: web::Payl
         &conn
     ).expect("Failed to create device");
 
-    let res = ws::start(websocket::WebSocket::new(account_id, device_id.to_string(), pool), &r, stream);
+    let res = ws::start(websocket::WebSocket::new(
+        account_id,
+        device_id.to_string(),
+        device_type_id.to_string(),
+        publish.get_ref().clone(),
+    ), &r, stream);
     res
 }
 
@@ -57,70 +77,6 @@ async fn device_types_post(pool: web::Data<db::DbPool>, r: HttpRequest, body: we
     Ok(HttpResponse::Ok().finish())
 }
 
-#[derive(Debug, Deserialize)]
-struct ModulePost {
-    parent_module_id: Option<String>,
-    device_type_id: String,
-    name: String,
-    description: Option<String>,
-}
-
-#[allow(unused)]
-async fn modules_post(pool: web::Data<db::DbPool>, body: web::Json<ModulePost>) -> Result<HttpResponse, Error> {
-    let conn = pool.get().expect("Failed to get a db connection");
-
-    db::create_module(
-        &body.name,
-        &body.device_type_id,
-        body.parent_module_id.as_deref(),
-        body.description.as_deref(),
-        &conn
-    );
-
-    Ok(HttpResponse::Ok().finish())
-}
-
-#[derive(Debug, Deserialize)]
-struct ComponentPost {
-    module_type_id: String,
-    name: String,
-    description: Option<String>,
-}
-
-#[allow(unused)]
-async fn components_post(pool: web::Data<db::DbPool>, body: web::Json<ComponentPost>) -> Result<HttpResponse, Error> {
-    let conn = pool.get().expect("Failed to get a db connection");
-
-    db::create_component(
-        &body.name,
-        &body.module_type_id,
-        body.description.as_deref(),
-        &conn
-    );
-
-    Ok(HttpResponse::Ok().finish())
-}
-
-#[derive(Debug, Deserialize)]
-struct GetModule {
-    device_type_id: String,
-}
-
-async fn get_module_tree(pool: web::Data<db::DbPool>, info: web::Path<GetModule>, r: HttpRequest) -> Result<HttpResponse, Error> {
-    let conn = pool.get().expect("Failed to get a db connection");
-    let account_id: &str = r.headers().get("Account-Id").unwrap().to_str().unwrap();
-
-    let modules = db::get_device_modules(
-        &info.device_type_id,
-        account_id,
-        &conn,
-    );
-    match modules {
-        Ok(result) => Ok(HttpResponse::Ok().content_type("application/json").body(serde_json::to_string(&result).unwrap())),
-        Err(_) => Ok(HttpResponse::Unauthorized().finish()),
-    }
-}
-
 async fn get_device_types(pool: web::Data<db::DbPool>, r: HttpRequest) -> Result<HttpResponse, Error> {
     let conn = pool.get().expect("Failed to get a db connection");
     let account_id: &str = r.headers().get("Account-Id").unwrap().to_str().unwrap();
@@ -134,23 +90,144 @@ async fn get_device_types(pool: web::Data<db::DbPool>, r: HttpRequest) -> Result
     }
 }
 
-/*
-    routes needed
-    POST routes:
-    - device_types
-    - modules
-    - components
+async fn get_topics(pool: web::Data<db::DbPool>, r: HttpRequest) -> Result<HttpResponse, Error> {
+    let conn = pool.get().expect("Failed to get a db connection");
+    let account_id: &str = r.headers().get("Account-Id").unwrap().to_str().unwrap();
 
-    GET routes:
-    - get device_type tree
-    - get events for device_type
-    - get events for module
-    - get events for component
-*/
+    let topics = db::get_topics(account_id, &conn);
+    Ok(HttpResponse::Ok().content_type("application/json").body(serde_json::to_string(&topics).unwrap()))
+}
+
+#[derive(Debug, Deserialize)]
+struct TopicsPost {
+    name: String,
+    description: Option<String>,
+}
+
+async fn topics_post(pool: web::Data<db::DbPool>, r: HttpRequest, body: web::Json<TopicsPost>) -> Result<HttpResponse, Error> {
+    let conn = pool.get().expect("Failed to get a db connection");
+    let account_id: &str = r.headers().get("Account-Id").unwrap().to_str().unwrap();
+
+    let create_topic_result = db::create_topic(
+        &body.name,
+        account_id,
+        body.description.as_deref(),
+        &conn
+    );
+
+    match create_topic_result {
+        Ok(result) => Ok(HttpResponse::Ok().content_type("application/json").body(serde_json::to_string(&result).unwrap())),
+        Err(_) => {
+            Ok(HttpResponse::BadRequest().finish())
+        },
+    }
+}
+
+async fn get_webhooks(pool: web::Data<db::DbPool>, r: HttpRequest) -> Result<HttpResponse, Error> {
+    let conn = pool.get().expect("Failed to get a db connection");
+    let account_id: &str = r.headers().get("Account-Id").unwrap().to_str().unwrap();
+
+    let webhooks = db::get_webhooks(account_id, &conn);
+    Ok(HttpResponse::Ok().content_type("application/json").body(serde_json::to_string(&webhooks).unwrap()))
+}
+
+#[derive(Debug, Deserialize)]
+struct WebhooksPost {
+    url: String,
+}
+
+async fn webhooks_post(pool: web::Data<db::DbPool>, r: HttpRequest, body: web::Json<WebhooksPost>) -> Result<HttpResponse, Error> {
+    let conn = pool.get().expect("Failed to get a db connection");
+    let account_id: &str = r.headers().get("Account-Id").unwrap().to_str().unwrap();
+
+    let create_webhook_result = db::create_webhook(
+        account_id,
+        &body.url,
+        &conn
+    );
+
+    match create_webhook_result {
+        Ok(result) => Ok(HttpResponse::Ok().content_type("application/json").body(serde_json::to_string(&result).unwrap())),
+        Err(_) => {
+            Ok(HttpResponse::BadRequest().finish())
+        },
+    }
+}
+
+async fn get_webhook_topics(pool: web::Data<db::DbPool>, r: HttpRequest) -> Result<HttpResponse, Error> {
+    let conn = pool.get().expect("Failed to get a db connection");
+    let account_id: &str = r.headers().get("Account-Id").unwrap().to_str().unwrap();
+    let webhook_id = r.match_info().query("id").parse().unwrap();
+
+    let webhook_topics = db::get_webhook_topics(webhook_id, &conn);
+    Ok(HttpResponse::Ok().content_type("application/json").body(serde_json::to_string(&webhook_topics).unwrap()))
+}
+
+async fn delete_webhook_topic(pool: web::Data<db::DbPool>, r: HttpRequest) -> Result<HttpResponse, Error> {
+    let conn = pool.get().expect("Failed to get a db connection");
+    let id = r.match_info().query("id").parse().unwrap();
+
+    let delete_result = db::delete_webhook_topic(id, &conn);
+
+    match delete_result {
+        Ok(_) => Ok(HttpResponse::Ok().finish()),
+        Err(_) => {
+            Ok(HttpResponse::BadRequest().finish())
+        },
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct WebhookTopicsPost {
+    webhook_id: i32,
+    topic_ids: Vec<String>,
+}
+
+async fn webhook_topics_post(pool: web::Data<db::DbPool>, r: HttpRequest, body: web::Json<WebhookTopicsPost>) -> Result<HttpResponse, Error> {
+    let conn = pool.get().expect("Failed to get a db connection");
+    
+    // TODO: check that the current connection is authorized to add
+    // a topic to the webhook_id specified, i.e. check the
+    // webhooks table for the combination of webhook_id and account_id (from headers)
+
+    for id in &body.topic_ids {
+        db::create_webhook_topic(
+            body.webhook_id,
+            &id,
+            &conn
+        ).expect("An error occurred.");
+    }
+
+    Ok(HttpResponse::Ok().finish())
+    // match create_webhook_topic_result {
+    //     Ok(result) => Ok(HttpResponse::Ok().content_type("application/json").body(serde_json::to_string(&result).unwrap())),
+    //     Err(_) => {
+    //         Ok(HttpResponse::BadRequest().finish())
+    //     },
+    // }
+}
+
+async fn webhook_delete(pool: web::Data<db::DbPool>, r: HttpRequest) -> Result<HttpResponse, Error> {
+    let conn = pool.get().expect("Failed to get a db connection");
+    let webhook_id = r.match_info().query("id").parse().unwrap();
+
+    let result = db::delete_webhook(
+        webhook_id,
+        &conn
+    );
+    
+    match result {
+        Ok(_) => Ok(HttpResponse::Ok().finish()),
+        Err(_) => {
+            Ok(HttpResponse::BadRequest().finish())
+        },
+    }
+}
 
 use actix_web::dev::ServiceRequest;
 use actix_web_httpauth::extractors::basic::BasicAuth;
 
+// TODO: not sure the best way to authenticate from rails server
 async fn validator(
     req: ServiceRequest,
     credentials: BasicAuth,
@@ -168,11 +245,45 @@ async fn main() -> std::io::Result<()> {
     env_logger::init();
     dotenv::dotenv().ok();
 
-    HttpServer::new(|| {
+    let (sender, receiver) = channel::<WebhookMessage>();
+    // TODO: move to new module
+    actix::spawn(async move {        
+        loop {
+            let r = receiver.recv();
+            let message = match r {
+                Ok(m) => m,
+                Err(e) => {
+                    println!("Error receiving webhook message: {:?}", e);
+                    continue;
+                }
+            };
+            // let mut requests = Vec::new();
+            for url in message.urls {
+                println!("Webhook sending to {:?}", url);
+                // let client = Client::default();
+                // requests.push(
+                //     client.post(url)
+                //         .header("Content-Type", "application/json")
+                //         .header("User-Agent", "Actix-web")
+                //         .send_body(message.message.clone())
+                //     );
+            }
+            // join_all(requests).await;
+        }
+    });
+
+    HttpServer::new(move || {
+        let pool = db::init_pool();
+        let webhook_publisher_addr = webhook_publisher::WebhookPublisher::initialize(pool.clone(), sender.clone()).start();
+        let publisher_addr = publisher::Publisher::initialize(
+            pool.clone(),
+            webhook_publisher_addr.clone(),
+        ).start();
         App::new()
             // enable logger
             .wrap(middleware::Logger::default())
-            .data(db::init_pool())
+            .data(pool)
+            .data(publisher_addr.clone())
             .service(web::resource("/").route(web::get().to(health_check)))
             // websocket route
             .service(web::resource("/ws/").route(web::get().to(ws_index)))
@@ -180,12 +291,20 @@ async fn main() -> std::io::Result<()> {
             .service(web::resource("/device_types")
                 .route(web::post().to(device_types_post))
                 .route(web::get().to(get_device_types)))
-            .service(
-                web::resource("/device_types/{device_type_id}/module_tree")
-                    .route(web::get().to(get_module_tree))
-            )
-            .service(web::resource("/modules").route(web::post().to(modules_post)))
-            .service(web::resource("/components").route(web::post().to(components_post)))
+            .service(web::resource("/topics")
+                .route(web::get().to(get_topics))
+                .route(web::post().to(topics_post)))
+            .service(web::resource("/webhooks")
+                .route(web::get().to(get_webhooks))
+                .route(web::post().to(webhooks_post)))
+            .service(web::resource("/webhooks/{id}")
+                .route(web::delete().to(webhook_delete)))
+            .service(web::resource("/webhooks/{id}/topics")
+                .route(web::get().to(get_webhook_topics)))
+            .service(web::resource("/webhook_topics")
+                .route(web::post().to(webhook_topics_post)))
+            .service(web::resource("/webhook_topics/{id}")
+                .route(web::delete().to(delete_webhook_topic)))
     })
     // TODO: add --release flag to binary such that it can
     // start on 0.0.0.0:8080 for release and 127.0.0.1:8080

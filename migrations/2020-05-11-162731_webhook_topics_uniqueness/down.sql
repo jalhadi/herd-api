@@ -1,0 +1,2 @@
+ALTER TABLE webhook_topics
+DROP CONSTRAINT unique_webhook_id_topic_id;

@@ -1,12 +1,10 @@
 use std::time::{Duration, Instant};
 use actix::prelude::*;
-use actix_web::{web};
 use actix_web_actors::ws;
 use serde_json::{Result as SerdeResult, Value};
-use serde::{Deserialize};
-use chrono::{NaiveDateTime};
+use serde::{Deserialize, Serialize};
 
-use crate::db;
+use crate::publisher;
 use crate::rate_limiter::RateLimit;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
@@ -16,8 +14,10 @@ const CLIENT_TIMEOUT: Duration = Duration::from_secs(10);
 pub struct WebSocket {
     account_id: String, // The account associated with the connection
     device_id: String, // The unique device (not type) connected
+    device_type_id: String,
     hb: Instant,
-    pool: web::Data<db::DbPool>,
+    publisher: Addr<publisher::Publisher>,
+    subscribed_topics: Vec<String>,
     rate_limit_struct: RateLimit,
     rate_limit: u64,
 }
@@ -27,17 +27,45 @@ impl Actor for WebSocket {
 
     fn started(&mut self, ctx: &mut Self::Context) {
         self.hb(ctx);
+
+        let addr = ctx.address();
+        self.publisher
+            .send(publisher::Connect {
+                account_id: self.account_id.clone(),
+                device_id: self.device_id.clone(),
+                device_type_id: self.device_type_id.clone(),
+                addr,
+            })
+            // TODO: no clue what the rest of this function does
+            // look into it
+            .into_actor(self)
+            .then(|res, _, ctx| {
+                match res {
+                    Ok(_) => (),
+                    // something is wrong with the websocket
+                    _ => ctx.stop(),
+                }
+                fut::ready(())
+            })
+            .wait(ctx);
     }
 }
 
 impl WebSocket {
-    pub fn new(account_id: String, device_id: String, pool: web::Data<db::DbPool>) -> Self {
+    pub fn new(
+        account_id: String,
+        device_id: String,
+        device_type_id: String,
+        publisher: Addr<publisher::Publisher>,
+    ) -> Self {
         Self {
             account_id,
             device_id,
+            device_type_id,
             hb: Instant::now(),
-            pool,
+            publisher,
             rate_limit_struct: RateLimit::new(),
+            subscribed_topics: Vec::new(),
             // TODO: this value should come from the api server
             // and be update every so often. If someone
             // updates their account to allow higher limit,
@@ -64,17 +92,38 @@ impl WebSocket {
     }
 }
 
-#[derive(Deserialize)]
-struct Data {
-    component_id: String,
-    json: Value,
-}
-
-#[derive(Deserialize)]
-struct Event {
+#[derive(Serialize, Debug, Clone)]
+pub struct Message {
     seconds_since_unix: u64,
     nano_seconds: u32,
-    data: Data
+    pub topics: Vec<String>,
+    data: Value
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+// #[serde(untagged)]
+pub enum Event {
+    Message {
+        seconds_since_unix: u64,
+        nano_seconds: u32,
+        topics: Vec<String>,
+        data: Value
+    },
+    Register {
+        topics: Vec<String>
+    }
+}
+
+impl Handler<publisher::PublishMessage> for WebSocket {
+    type Result = ();
+
+    fn handle(&mut self, msg: publisher::PublishMessage, ctx: &mut ws::WebsocketContext<Self>) -> Self::Result {
+        match serde_json::to_string(&msg) {
+            Ok(m) => ctx.text(m),
+            Err(e) => println!("Error serializing message: {:?}", e),
+        };
+        ()
+    }
 }
 
 impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocket {
@@ -100,42 +149,55 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocket {
                     return;
                 }
 
+                println!("Received message: {:?}", text);
+
                 let maybe_event: SerdeResult<Event> = serde_json::from_str(&text);
 
                 match maybe_event {
                     Ok(event) => {
-                        println!("Successful message from {}", self.account_id);
-                        println!("ID: {}", event.data.component_id);
-                        println!("{}", event.data.component_id);
-                        let conn = self.pool.get().expect("Failed to get a db connection");
-
-                        let event_timestamp = NaiveDateTime::from_timestamp(
-                            event.seconds_since_unix as i64,
-                            event.nano_seconds
-                        );
-
-                        let insert_result = db::insert_event(
-                            &event.data.component_id,
-                            &self.device_id,
-                            event.data.json,
-                            event_timestamp,
-                            &conn
-                        );
-
-                        match insert_result {
-                            Ok(_) => println!("Insert successful."),
-                            Err(_) => println!("Insert failed."),
+                        println!("Got event: {:?}", event);
+                        
+                        match event {
+                            Event::Message {
+                                seconds_since_unix,
+                                nano_seconds,
+                                topics,
+                                data,
+                            } => {
+                                self.publisher
+                                    .do_send(publisher::PublishMessage {
+                                        sender_device_type_id: self.device_type_id.clone(),
+                                        message: Message {
+                                            seconds_since_unix,
+                                            nano_seconds,
+                                            topics,
+                                            data
+                                        }
+                                    });
+                            },
+                            Event::Register { topics } => {
+                                println!("Register");
+                                self.publisher
+                                    .do_send(publisher::RegisterTopics {
+                                        account_id: self.account_id.clone(),
+                                        device_id: self.device_id.clone(),
+                                        topics,
+                                    });
+                            },
                         }
-                    }
+                    },
                     Err(err) => {
                         // TODO: return a useful error message
                         println!("JSON parse error: {:?}", err);
                     }
                 }
-                ctx.text(text);
             },
             Ok(ws::Message::Binary(bin)) => ctx.binary(bin),
-            Ok(ws::Message::Close(_)) => ctx.stop(),
+            Ok(ws::Message::Close(_)) => {
+                self.publisher
+                    .do_send(publisher::Disconnect(self.device_type_id.clone()));
+                ctx.stop()
+            },
             _ => {
                 // TODO: return a useful error message
                 println!("Bad formed data from {}", self.account_id);

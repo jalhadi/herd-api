@@ -1,12 +1,12 @@
 #[macro_use]
 extern crate diesel;
 
+use serde_json::Value;
 use actix;
 use actix::prelude::*;
 use actix_web::{middleware, web, App, Error, HttpRequest, HttpResponse, HttpServer};
 use actix_web_actors::ws;
 use serde::{Deserialize};
-use std::thread;
 use actix_web::client::Client;
 use futures::future::{join_all};
 use actix_web_httpauth::middleware::HttpAuthentication;
@@ -20,6 +20,7 @@ mod websocket;
 mod rate_limiter;
 mod publisher;
 mod webhook_publisher;
+mod utils;
 
 pub mod schema;
 pub mod models;
@@ -55,6 +56,39 @@ async fn ws_index(
         publish.get_ref().clone(),
     ), &r, stream);
     res
+}
+
+#[derive(Debug, Deserialize)]
+struct MessagePost {
+    topics: Vec<String>,
+    data: Value,
+}
+
+async fn message(
+    r: HttpRequest,
+    body: web::Json<MessagePost>,
+    publish: web::Data<Addr<publisher::Publisher>>
+) -> HttpResponse {
+    let account_id: &str = r.headers().get("Account-Id").unwrap().to_str().unwrap();
+    let uri = r.peer_addr();
+    let sender = publisher::Sender::Address(uri);
+
+    let time = utils::get_time().expect("An error occurred.");
+    let message = websocket::Message {
+        seconds_since_unix: time.seconds_since_unix,
+        nano_seconds: time.nano_seconds,
+        topics: body.topics.clone(),
+        data: body.data.clone()
+    };
+    let publish_message = publisher::PublishMessage {
+        sender,
+        account_id: account_id.to_owned(), 
+        message
+    };
+
+    publish.do_send(publish_message);
+
+    HttpResponse::Ok().finish()
 }
 
 #[derive(Debug, Deserialize)]
@@ -287,6 +321,7 @@ async fn main() -> std::io::Result<()> {
             .service(web::resource("/").route(web::get().to(health_check)))
             // websocket route
             .service(web::resource("/ws/").route(web::get().to(ws_index)))
+            .service(web::resource("/message").route(web::post().to(message)))
             // .wrap(HttpAuthentication::basic(validator))
             .service(web::resource("/device_types")
                 .route(web::post().to(device_types_post))

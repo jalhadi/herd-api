@@ -74,8 +74,6 @@ pub fn create_device<'a>(
         device_type_id,
     };
 
-    println!("New device {:?}", new_device);
-
     diesel::insert_into(devices::table)
         .values(&new_device)
         // TODO: this is broken, on conflist do nothing
@@ -193,6 +191,32 @@ pub fn topic_relation_exists<'a>(
         Ok(true) => true,
         _ => false,
     }
+}
+
+pub struct TopicRelation {
+    pub id: String,
+    pub account_id: String,
+}
+
+pub fn get_all_topic_relations<'a>(
+    conn: &PgConnection
+) -> Result<Vec<TopicRelation>, diesel::result::Error> {
+    use crate::schema::topics::dsl;
+
+    let result = dsl::topics
+        .select((dsl::id, dsl::account_id))
+        .load::<(String, String)>(conn)?;
+
+    let mut relations = Vec::new();
+    for item in result {
+        relations.push(
+            TopicRelation {
+                id: item.0,
+                account_id: item.1
+            }
+        );
+    }
+    Ok(relations)
 }
 
 pub fn create_webhook<'a>(

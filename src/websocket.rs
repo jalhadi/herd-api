@@ -17,7 +17,6 @@ pub struct WebSocket {
     device_type_id: String,
     hb: Instant,
     publisher: Addr<publisher::Publisher>,
-    subscribed_topics: Vec<String>,
     rate_limit_struct: RateLimit,
     rate_limit: u64,
 }
@@ -65,7 +64,6 @@ impl WebSocket {
             hb: Instant::now(),
             publisher,
             rate_limit_struct: RateLimit::new(),
-            subscribed_topics: Vec::new(),
             // TODO: this value should come from the api server
             // and be update every so often. If someone
             // updates their account to allow higher limit,
@@ -78,7 +76,7 @@ impl WebSocket {
     fn hb(&self, ctx: &mut <Self as Actor>::Context) {
         ctx.run_interval(HEARTBEAT_INTERVAL, |act, ctx| {
             if Instant::now().duration_since(act.hb) > CLIENT_TIMEOUT {
-                println!("Websocket Client heartbeat failed, disconnecting!");
+                println!("Websocket Client heartbeat failed, disconnecting.");
                 ctx.stop();
                 return;
             }
@@ -94,10 +92,10 @@ impl WebSocket {
 
 #[derive(Serialize, Debug, Clone)]
 pub struct Message {
-    seconds_since_unix: u64,
-    nano_seconds: u32,
+    pub seconds_since_unix: u64,
+    pub nano_seconds: u32,
     pub topics: Vec<String>,
-    data: Value
+    pub data: Value
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
@@ -132,7 +130,6 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocket {
         msg: Result<ws::Message, ws::ProtocolError>,
         ctx: &mut Self::Context,
     ) {
-        println!("{:?}", msg);
         match msg {
             Ok(ws::Message::Ping(msg)) => {
                 self.hb = Instant::now();
@@ -149,14 +146,10 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocket {
                     return;
                 }
 
-                println!("Received message: {:?}", text);
-
                 let maybe_event: SerdeResult<Event> = serde_json::from_str(&text);
 
                 match maybe_event {
                     Ok(event) => {
-                        println!("Got event: {:?}", event);
-                        
                         match event {
                             Event::Message {
                                 seconds_since_unix,
@@ -164,9 +157,14 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocket {
                                 topics,
                                 data,
                             } => {
+                                let sender = publisher::Sender::Device {
+                                    device_id: self.device_id.clone(),
+                                    device_type_id: self.device_type_id.clone(),
+                                };
                                 self.publisher
                                     .do_send(publisher::PublishMessage {
-                                        sender_device_type_id: self.device_type_id.clone(),
+                                        sender,
+                                        account_id: self.account_id.clone(),
                                         message: Message {
                                             seconds_since_unix,
                                             nano_seconds,
@@ -176,7 +174,6 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocket {
                                     });
                             },
                             Event::Register { topics } => {
-                                println!("Register");
                                 self.publisher
                                     .do_send(publisher::RegisterTopics {
                                         account_id: self.account_id.clone(),
@@ -192,12 +189,12 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocket {
                     }
                 }
             },
-            Ok(ws::Message::Binary(bin)) => ctx.binary(bin),
             Ok(ws::Message::Close(_)) => {
                 self.publisher
                     .do_send(publisher::Disconnect(self.device_type_id.clone()));
                 ctx.stop()
             },
+            Ok(ws::Message::Binary(_)) => println!("Received binary data. Binary data is not supported."),
             _ => {
                 // TODO: return a useful error message
                 println!("Bad formed data from {}", self.account_id);

@@ -110,7 +110,7 @@ impl Handler<PublishMessage> for WebhookPublisher {
             urls: webhooks,
             message: serialized_message,
         };
-        println!("HIYA: {:?}", webhook_message);
+
         match self.sender.send(webhook_message) {
             Ok(_) => (),
             Err(e) => println!("Error sending out messages: {:?}", e),

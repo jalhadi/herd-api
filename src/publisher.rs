@@ -3,6 +3,8 @@ use std::time::{Duration};
 use std::collections::{HashMap, HashSet};
 use serde::{Serialize};
 use std::net::SocketAddr;
+use serde_json::json;
+use serde_json::Value;
 
 use crate::websocket::Message;
 
@@ -11,6 +13,7 @@ use crate::webhook_publisher::{WebhookPublisher};
 
 use crate::db;
 use crate::db::DbPool;
+use crate::logging;
 
 const TOPIC_RELATIONS_UPDATE_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -50,13 +53,20 @@ pub struct Connect {
 
 #[derive(Message)]
 #[rtype(result = "()")]
-pub struct Disconnect(pub String);
+pub struct Disconnect{
+    pub account_id: String,
+    pub device_type_id: String,
+    pub device_id: String,
+}
 
 pub struct Publisher {
     pool: DbPool,
     webhook_publisher: Addr<WebhookPublisher>,
+    // device_ids to WebSocket address
     sessions: HashMap<String, Addr<WebSocket>>,
-    topics: HashMap<String, Vec<String>>,
+    // topic_id to HashSet of device_ids
+    topics: HashMap<String, HashSet<String>>,
+    // account_id to HashSet of topic_ids
     topic_relations: HashMap<String, HashSet<String>>
 }
 
@@ -123,6 +133,17 @@ impl Handler<Connect> for Publisher {
     type Result = ();
 
     fn handle(&mut self, msg: Connect, _: &mut Context<Self>) -> Self::Result {
+        logging::log(
+            &msg.account_id,
+            logging::LogLevel::Info,
+            json!({
+                "device_id": msg.device_id,
+                "device_type_id": msg.device_type_id,
+                "message": "connected"
+            }),
+            &self.pool
+        );
+
         self.sessions.insert(msg.device_id.clone(), msg.addr);
     }
 }
@@ -139,13 +160,15 @@ impl Handler<RegisterTopics> for Publisher {
                 continue;
             }
             match self.topics.get_mut(&topic) {
-                // Insert device_id into existing vector if it exists
-                Some(v) => v.push(msg.device_id.clone()),
-                // Otherwise create a new vector, push the device_id
-                // and insert the vector into the hash
+                // Insert device_id into existing HashSet if it exists
+                Some(v) => {
+                    v.insert(msg.device_id.clone());
+                },
+                // Otherwise create a new HashSet, push the device_id
+                // and insert the HashSet into the hash
                 None => {
-                    let mut new_topic = Vec::new();
-                    new_topic.push(msg.device_id.clone());
+                    let mut new_topic = HashSet::new();
+                    new_topic.insert(msg.device_id.clone());
                     self.topics.insert(topic, new_topic);
                 },
             }
@@ -157,9 +180,18 @@ impl Handler<Disconnect> for Publisher {
     type Result = ();
 
     fn handle(&mut self, msg: Disconnect, _: &mut Context<Self>) -> Self::Result {
-        println!("{:?} is disconnecting.", msg.0);
+        logging::log(
+            &msg.account_id,
+            logging::LogLevel::Info,
+            json!({
+                "device_id": msg.device_id,
+                "device_type_id": msg.device_type_id,
+                "message": "disconnected"
+            }),
+            &self.pool
+        );
 
-        self.sessions.remove(&msg.0);
+        self.sessions.remove(&msg.device_id);
     }
 }
 
@@ -202,6 +234,31 @@ impl Handler<PublishMessage> for Publisher {
         if let Sender::Device { .. } = &msg.sender {
             self.webhook_publisher.do_send(msg.clone());
         }
+
+        let sender_json: Value = match msg.sender.clone() {
+            Sender::Device { device_id, device_type_id} => json!({
+                    "device_id": device_id,
+                    "device_type_id": device_type_id
+                }),
+            Sender::Address(maybe_address) =>
+                match maybe_address {
+                    Some(address) => json!({
+                        "ip": address.ip()
+                    }),
+                    None => Value::Null
+                },
+        };
+
+        logging::log(
+            &msg.account_id,
+            logging::LogLevel::Info,
+            json!({
+                "sender": sender_json,
+                "topics": msg.message.topics,
+                "message": "Message received"
+            }),
+            &self.pool
+        );
 
         // TODO: need to check if a message is allowed
         // to send to a specific topic

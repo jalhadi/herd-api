@@ -3,9 +3,11 @@ use super::schema::devices;
 use super::schema::topics;
 use super::schema::webhooks;
 use super::schema::webhook_topics;
+use super::schema::logs;
 
 use std::time::SystemTime;
 use serde::{Serialize};
+use serde_json::{Value};
 
 #[derive(Queryable, Serialize)]
 pub struct DeviceType {
@@ -90,4 +92,23 @@ pub struct WebhookTopic {
 pub struct NewWebhookTopic<'a> {
     pub webhook_id: i32,
     pub topic_id: &'a str,
+}
+
+#[derive(Queryable)]
+pub struct Log {
+    pub id: i32,
+    pub account_id: String,
+    pub type_: String,
+    pub level: String,
+    pub data: Option<Value>,
+    pub created_at: SystemTime,
+    pub updated_at: SystemTime,
+}
+
+#[derive(Insertable, Debug)]
+#[table_name = "logs"]
+pub struct NewLog<'a> {
+    pub account_id: &'a str,
+    pub level: &'a str,
+    pub data: Option<Value>,
 }

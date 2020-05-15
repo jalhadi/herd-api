@@ -5,7 +5,7 @@ use std::vec::Vec;
 
 use diesel_migrations::run_pending_migrations;
 use diesel::pg::PgConnection;
-use diesel::r2d2::{ Pool, ConnectionManager };
+use diesel::r2d2::{Pool, ConnectionManager};
 use std::env;
 use uuid::Uuid;
 use serde::{Serialize};

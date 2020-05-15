@@ -21,6 +21,7 @@ mod rate_limiter;
 mod publisher;
 mod webhook_publisher;
 mod utils;
+mod logging;
 
 pub mod schema;
 pub mod models;

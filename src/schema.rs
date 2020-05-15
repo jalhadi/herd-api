@@ -19,6 +19,17 @@ table! {
 }
 
 table! {
+    logs (id) {
+        id -> Int4,
+        account_id -> Varchar,
+        level -> Varchar,
+        data -> Nullable<Jsonb>,
+        created_at -> Timestamp,
+        updated_at -> Timestamp,
+    }
+}
+
+table! {
     topics (id) {
         id -> Varchar,
         account_id -> Varchar,
@@ -56,6 +67,7 @@ joinable!(webhook_topics -> webhooks (webhook_id));
 allow_tables_to_appear_in_same_query!(
     device_types,
     devices,
+    logs,
     topics,
     webhook_topics,
     webhooks,

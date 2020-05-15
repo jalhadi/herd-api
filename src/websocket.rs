@@ -191,7 +191,11 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocket {
             },
             Ok(ws::Message::Close(_)) => {
                 self.publisher
-                    .do_send(publisher::Disconnect(self.device_type_id.clone()));
+                    .do_send(publisher::Disconnect {
+                        account_id: self.account_id.clone(),
+                        device_id: self.device_id.clone(),
+                        device_type_id: self.device_type_id.clone(),
+                    });
                 ctx.stop()
             },
             Ok(ws::Message::Binary(_)) => println!("Received binary data. Binary data is not supported."),

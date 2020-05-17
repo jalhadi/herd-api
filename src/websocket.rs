@@ -1,11 +1,15 @@
 use std::time::{Duration, Instant};
+use std::sync::Arc;
 use actix::prelude::*;
 use actix_web_actors::ws;
-use serde_json::{Result as SerdeResult, Value};
+use actix_web::web;
+use serde_json::{json, Result as SerdeResult, Value};
 use serde::{Deserialize, Serialize};
 
 use crate::publisher;
 use crate::rate_limiter::RateLimit;
+use crate::db::DbPool;
+use crate::logging;
 
 const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 /// How long before lack of client response causes a timeout
@@ -19,6 +23,7 @@ pub struct WebSocket {
     publisher: Addr<publisher::Publisher>,
     rate_limit_struct: RateLimit,
     rate_limit: u64,
+    pool: web::Data<DbPool>,
 }
 
 impl Actor for WebSocket {
@@ -56,6 +61,7 @@ impl WebSocket {
         device_id: String,
         device_type_id: String,
         publisher: Addr<publisher::Publisher>,
+        pool: web::Data<DbPool>,
     ) -> Self {
         Self {
             account_id,
@@ -70,6 +76,7 @@ impl WebSocket {
             // it should be reflected without having to restart
             // connection.
             rate_limit: 100,
+            pool
         }
     }
 
@@ -120,7 +127,6 @@ impl Handler<publisher::PublishMessage> for WebSocket {
             Ok(m) => ctx.text(m),
             Err(e) => println!("Error serializing message: {:?}", e),
         };
-        ()
     }
 }
 
@@ -184,8 +190,16 @@ impl StreamHandler<Result<ws::Message, ws::ProtocolError>> for WebSocket {
                         }
                     },
                     Err(err) => {
-                        // TODO: return a useful error message
-                        println!("JSON parse error: {:?}", err);
+                        logging::log(
+                            &self.account_id,
+                            logging::LogLevel::Error,
+                            json!({
+                                "device_id": self.device_id,
+                                "device_type_id": self.device_type_id,
+                                "error": err.to_string(),
+                            }),
+                            &self.pool,
+                        );
                     }
                 }
             },

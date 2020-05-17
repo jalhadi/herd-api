@@ -98,7 +98,6 @@ pub struct NewWebhookTopic<'a> {
 pub struct Log {
     pub id: i32,
     pub account_id: String,
-    pub type_: String,
     pub level: String,
     pub data: Option<Value>,
     pub created_at: SystemTime,

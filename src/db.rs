@@ -6,11 +6,13 @@ use std::vec::Vec;
 use diesel_migrations::run_pending_migrations;
 use diesel::pg::PgConnection;
 use diesel::r2d2::{Pool, ConnectionManager};
+use diesel::pg::upsert::on_constraint;
 use std::env;
 use uuid::Uuid;
 use serde::{Serialize};
 
 use crate::models;
+use crate::utils::{instant_to_seconds};
 
 pub type DbPool = Pool<ConnectionManager<PgConnection>>;
 
@@ -35,12 +37,6 @@ pub fn init_pool() -> DbPool {
 
 fn generate_random_uuid () -> String {
     Uuid::new_v4().to_simple().to_string()
-}
-
-fn instant_to_seconds(time: SystemTime) -> u64 {
-    time.duration_since(SystemTime::UNIX_EPOCH)
-        .expect("Error in getting time bucket")
-        .as_secs()
 }
 
 pub fn create_device_type<'a>(
@@ -76,9 +72,12 @@ pub fn create_device<'a>(
 
     diesel::insert_into(devices::table)
         .values(&new_device)
-        // TODO: this is broken, on conflist do nothing
-        // surpresses all errors
-        .on_conflict_do_nothing()
+        // If a combination of device_id and
+        // device_type_id already exists, do nothing.
+        // We still want to error if a non existant
+        // device_type_id is used
+        .on_conflict(on_constraint("devices_pkey"))
+        .do_nothing()
         .execute(conn)?;
     Ok(())
 }
@@ -115,6 +114,22 @@ pub fn get_device_types<'a>(
     }
 
     Ok(all_device_types)
+}
+
+pub fn device_type_relation_exists<'a>(
+    account_id: &'a str,
+    device_type_id: &'a str,
+    conn: &PgConnection
+) -> bool {
+    use crate::schema::device_types::dsl;
+
+    let result = select(exists(
+        dsl::device_types.filter(dsl::id.eq(device_type_id)).filter(dsl::account_id.eq(account_id))))
+        .get_result::<bool>(conn);
+    match result {
+        Ok(true) => true,
+        _ => false,
+    }
 }
 
 #[derive(Debug, Serialize)]

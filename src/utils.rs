@@ -21,3 +21,8 @@ pub fn get_time() -> Result<CreatedAt, &'static str> {
         }
     )
 }
+pub fn instant_to_seconds(time: SystemTime) -> u64 {
+    time.duration_since(SystemTime::UNIX_EPOCH)
+        .expect("Error in getting time bucket")
+        .as_secs()
+}

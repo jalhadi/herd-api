@@ -22,6 +22,7 @@ mod publisher;
 mod webhook_publisher;
 mod utils;
 mod logging;
+mod pagination;
 
 pub mod schema;
 pub mod models;
@@ -44,6 +45,19 @@ async fn ws_index(
     let device_type_id: &str = r.headers().get("Device-Type-Id").unwrap().to_str().unwrap();
     let conn = pool.get().expect("Failed to get a db connection");
 
+    let relation_exists = db::device_type_relation_exists(
+        &account_id,
+        device_type_id,
+        &conn,
+    );
+
+    match relation_exists {
+        true => (),
+        false => {
+            return Ok(HttpResponse::Forbidden().finish());
+        }
+    }
+
     db::create_device(
         device_id,
         device_type_id,
@@ -55,6 +69,7 @@ async fn ws_index(
         device_id.to_string(),
         device_type_id.to_string(),
         publish.get_ref().clone(),
+        pool.clone(),
     ), &r, stream);
     res
 }
@@ -259,6 +274,36 @@ async fn webhook_delete(pool: web::Data<db::DbPool>, r: HttpRequest) -> Result<H
     }
 }
 
+#[derive(Deserialize, Debug)]
+struct LogQuery {
+    page: Option<u32>,
+    limit: Option<u32>
+}
+
+async fn get_logs(
+    pool: web::Data<db::DbPool>,
+    r: HttpRequest,
+    query: web::Query<LogQuery>
+) -> Result<HttpResponse, Error> {
+    let conn = pool.get().expect("Failed to get a db connection");
+    let account_id: &str = r.headers().get("Account-Id").unwrap().to_str().unwrap();
+
+    println!("{:?}", query);
+    let log_result = logging::paginated_logs(
+        account_id,
+        query.page,
+        query.limit,
+        &conn
+    );
+
+    match log_result {
+        Ok(result) => Ok(HttpResponse::Ok().content_type("application/json").body(serde_json::to_string(&result).unwrap())),
+        Err(_) => {
+            Ok(HttpResponse::BadRequest().finish())
+        },
+    }
+}
+
 use actix_web::dev::ServiceRequest;
 use actix_web_httpauth::extractors::basic::BasicAuth;
 
@@ -341,6 +386,8 @@ async fn main() -> std::io::Result<()> {
                 .route(web::post().to(webhook_topics_post)))
             .service(web::resource("/webhook_topics/{id}")
                 .route(web::delete().to(delete_webhook_topic)))
+            .service(web::resource("/logs")
+                .route(web::get().to(get_logs)))
     })
     // TODO: add --release flag to binary such that it can
     // start on 0.0.0.0:8080 for release and 127.0.0.1:8080

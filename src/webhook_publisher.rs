@@ -1,7 +1,8 @@
+use actix;
 use actix::prelude::*;
 use std::time::{Duration};
 use std::collections::{HashMap, HashSet};
-use std::sync::mpsc::Sender;
+use futures::future::{join_all};
 
 use crate::db;
 use crate::db::DbPool;
@@ -10,15 +11,8 @@ use crate::publisher::{PublishMessage};
 
 const WEBHOOK_UPDATE_INTERVAL: Duration = Duration::from_secs(60);
 
-#[derive(Debug)]
-pub struct WebhookMessage {
-    pub urls: HashSet<String>, 
-    pub message: String,
-}
-
 pub struct WebhookPublisher {
     pool: DbPool,
-    sender: Sender<WebhookMessage>,
     topics: HashMap<String, HashSet<String>>
 }
 
@@ -37,10 +31,9 @@ impl Actor for WebhookPublisher {
 }
 
 impl WebhookPublisher {
-    pub fn initialize(pool: DbPool, sender: Sender<WebhookMessage>) -> WebhookPublisher {
+    pub fn initialize(pool: DbPool) -> WebhookPublisher {
         WebhookPublisher {
             pool,
-            sender,
             topics: HashMap::new()
         }
     }
@@ -106,14 +99,23 @@ impl Handler<PublishMessage> for WebhookPublisher {
                 return;
             },
         };
-        let webhook_message = WebhookMessage {
-            urls: webhooks,
-            message: serialized_message,
-        };
 
-        match self.sender.send(webhook_message) {
-            Ok(_) => (),
-            Err(e) => println!("Error sending out messages: {:?}", e),
-        };
+        actix::spawn(async move {
+            let mut requests = Vec::new();
+            for url in webhooks {
+                println!("Webhook sending to {:?}", url);
+                requests.push(async {
+                    println!("Hey: {}", serialized_message);
+                });
+                // let client = Client::default();
+                // requests.push(
+                //     client.post(url)
+                //         .header("Content-Type", "application/json")
+                //         .header("User-Agent", "Actix-web")
+                //         .send_body(serialized_message.clone())
+                //     );
+            }
+            join_all(requests).await;
+        });
     }
 }

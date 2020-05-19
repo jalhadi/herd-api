@@ -59,6 +59,13 @@ pub struct Disconnect{
     pub device_id: String,
 }
 
+// When a server is being taken down and another
+// put up, need to close the websocket connections
+// and tell them to reopen
+#[derive(Message)]
+#[rtype(result = "()")]
+pub struct Shutdown();
+
 pub struct Publisher {
     pool: DbPool,
     webhook_publisher: Addr<WebhookPublisher>,
@@ -195,6 +202,20 @@ impl Handler<Disconnect> for Publisher {
     }
 }
 
+impl Handler<Shutdown> for Publisher {
+    type Result = ();
+
+    fn handle(&mut self, _msg: Shutdown, _: &mut Context<Self>) -> Self::Result {
+        println!("Publisher sending shutdown...");
+        for (device_id, addr) in self.sessions.iter() {
+            // TODO: add logging to record when shutdowns
+            // for deployment happen
+            println!("device_id: {:?}", device_id);
+            addr.do_send(Shutdown());
+        }
+    }
+}
+
 impl Handler<PublishMessage> for Publisher {
     type Result = ();
 
@@ -254,7 +275,7 @@ impl Handler<PublishMessage> for Publisher {
             logging::LogLevel::Info,
             json!({
                 "sender": sender_json,
-                "topics": msg.message.topics,
+                "data": msg.message, 
                 "message": "Message received"
             }),
             &self.pool

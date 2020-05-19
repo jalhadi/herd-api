@@ -1,5 +1,8 @@
 #[macro_use]
 extern crate diesel;
+extern crate ctrlc;
+use std::any::Any;
+use std::sync::Arc;
 
 use serde_json::Value;
 use actix;
@@ -7,12 +10,8 @@ use actix::prelude::*;
 use actix_web::{middleware, web, App, Error, HttpRequest, HttpResponse, HttpServer};
 use actix_web_actors::ws;
 use serde::{Deserialize};
-use actix_web::client::Client;
-use futures::future::{join_all};
+use futures::executor;
 use actix_web_httpauth::middleware::HttpAuthentication;
-use std::sync::mpsc::channel;
-
-use crate::webhook_publisher::WebhookMessage;
 
 mod auth;
 mod db;
@@ -26,6 +25,24 @@ mod pagination;
 
 pub mod schema;
 pub mod models;
+
+fn return_result<T: Any>(result: Result<T, diesel::result::Error>) -> Result<HttpResponse, Error> {
+    match result {
+        Ok(_) => Ok(HttpResponse::Ok().finish()),
+        Err(_) => {
+            Ok(HttpResponse::BadRequest().finish())
+        },
+    }
+}
+
+fn return_result_body<T: serde::Serialize>(result: Result<T, diesel::result::Error>) -> Result<HttpResponse, Error> {
+    match result {
+        Ok(res) => Ok(HttpResponse::Ok().content_type("application/json").body(serde_json::to_string(&res).unwrap())),
+        Err(_) => {
+            Ok(HttpResponse::BadRequest().finish())
+        },
+    }
+}
 
 async fn health_check() -> HttpResponse {
     HttpResponse::Ok().finish()
@@ -131,21 +148,16 @@ async fn get_device_types(pool: web::Data<db::DbPool>, r: HttpRequest) -> Result
     let conn = pool.get().expect("Failed to get a db connection");
     let account_id: &str = r.headers().get("Account-Id").unwrap().to_str().unwrap();
 
-    let device_types = db::get_device_types(account_id, &conn);
-    match device_types {
-        Ok(result) => Ok(HttpResponse::Ok().content_type("application/json").body(serde_json::to_string(&result).unwrap())),
-        Err(_) => {
-            Ok(HttpResponse::BadRequest().finish())
-        },
-    }
+    let result = db::get_device_types(account_id, &conn);
+    return_result_body(result)
 }
 
 async fn get_topics(pool: web::Data<db::DbPool>, r: HttpRequest) -> Result<HttpResponse, Error> {
     let conn = pool.get().expect("Failed to get a db connection");
     let account_id: &str = r.headers().get("Account-Id").unwrap().to_str().unwrap();
 
-    let topics = db::get_topics(account_id, &conn);
-    Ok(HttpResponse::Ok().content_type("application/json").body(serde_json::to_string(&topics).unwrap()))
+    let result = db::get_topics(account_id, &conn);
+    return_result_body(result)
 }
 
 #[derive(Debug, Deserialize)]
@@ -158,19 +170,13 @@ async fn topics_post(pool: web::Data<db::DbPool>, r: HttpRequest, body: web::Jso
     let conn = pool.get().expect("Failed to get a db connection");
     let account_id: &str = r.headers().get("Account-Id").unwrap().to_str().unwrap();
 
-    let create_topic_result = db::create_topic(
+    let result = db::create_topic(
         &body.name,
         account_id,
         body.description.as_deref(),
         &conn
     );
-
-    match create_topic_result {
-        Ok(result) => Ok(HttpResponse::Ok().content_type("application/json").body(serde_json::to_string(&result).unwrap())),
-        Err(_) => {
-            Ok(HttpResponse::BadRequest().finish())
-        },
-    }
+    return_result_body(result)
 }
 
 async fn get_webhooks(pool: web::Data<db::DbPool>, r: HttpRequest) -> Result<HttpResponse, Error> {
@@ -190,18 +196,12 @@ async fn webhooks_post(pool: web::Data<db::DbPool>, r: HttpRequest, body: web::J
     let conn = pool.get().expect("Failed to get a db connection");
     let account_id: &str = r.headers().get("Account-Id").unwrap().to_str().unwrap();
 
-    let create_webhook_result = db::create_webhook(
+    let result = db::create_webhook(
         account_id,
         &body.url,
         &conn
     );
-
-    match create_webhook_result {
-        Ok(result) => Ok(HttpResponse::Ok().content_type("application/json").body(serde_json::to_string(&result).unwrap())),
-        Err(_) => {
-            Ok(HttpResponse::BadRequest().finish())
-        },
-    }
+    return_result_body(result)
 }
 
 async fn get_webhook_topics(pool: web::Data<db::DbPool>, r: HttpRequest) -> Result<HttpResponse, Error> {
@@ -209,22 +209,16 @@ async fn get_webhook_topics(pool: web::Data<db::DbPool>, r: HttpRequest) -> Resu
     let account_id: &str = r.headers().get("Account-Id").unwrap().to_str().unwrap();
     let webhook_id = r.match_info().query("id").parse().unwrap();
 
-    let webhook_topics = db::get_webhook_topics(webhook_id, &conn);
-    Ok(HttpResponse::Ok().content_type("application/json").body(serde_json::to_string(&webhook_topics).unwrap()))
+    let result = db::get_webhook_topics(webhook_id, &conn);
+    return_result_body(result)
 }
 
 async fn delete_webhook_topic(pool: web::Data<db::DbPool>, r: HttpRequest) -> Result<HttpResponse, Error> {
     let conn = pool.get().expect("Failed to get a db connection");
     let id = r.match_info().query("id").parse().unwrap();
 
-    let delete_result = db::delete_webhook_topic(id, &conn);
-
-    match delete_result {
-        Ok(_) => Ok(HttpResponse::Ok().finish()),
-        Err(_) => {
-            Ok(HttpResponse::BadRequest().finish())
-        },
-    }
+    let result = db::delete_webhook_topic(id, &conn);
+    return_result(result)
 }
 
 #[derive(Debug, Deserialize)]
@@ -265,13 +259,7 @@ async fn webhook_delete(pool: web::Data<db::DbPool>, r: HttpRequest) -> Result<H
         webhook_id,
         &conn
     );
-    
-    match result {
-        Ok(_) => Ok(HttpResponse::Ok().finish()),
-        Err(_) => {
-            Ok(HttpResponse::BadRequest().finish())
-        },
-    }
+    return_result(result)
 }
 
 #[derive(Deserialize, Debug)]
@@ -289,19 +277,14 @@ async fn get_logs(
     let account_id: &str = r.headers().get("Account-Id").unwrap().to_str().unwrap();
 
     println!("{:?}", query);
-    let log_result = logging::paginated_logs(
+    let result = logging::paginated_logs(
         account_id,
         query.page,
         query.limit,
         &conn
     );
 
-    match log_result {
-        Ok(result) => Ok(HttpResponse::Ok().content_type("application/json").body(serde_json::to_string(&result).unwrap())),
-        Err(_) => {
-            Ok(HttpResponse::BadRequest().finish())
-        },
-    }
+    return_result_body(result)
 }
 
 use actix_web::dev::ServiceRequest;
@@ -325,44 +308,20 @@ async fn main() -> std::io::Result<()> {
     env_logger::init();
     dotenv::dotenv().ok();
 
-    let (sender, receiver) = channel::<WebhookMessage>();
-    // TODO: move to new module
-    actix::spawn(async move {        
-        loop {
-            let r = receiver.recv();
-            let message = match r {
-                Ok(m) => m,
-                Err(e) => {
-                    println!("Error receiving webhook message: {:?}", e);
-                    continue;
-                }
-            };
-            // let mut requests = Vec::new();
-            for url in message.urls {
-                println!("Webhook sending to {:?}", url);
-                // let client = Client::default();
-                // requests.push(
-                //     client.post(url)
-                //         .header("Content-Type", "application/json")
-                //         .header("User-Agent", "Actix-web")
-                //         .send_body(message.message.clone())
-                //     );
-            }
-            // join_all(requests).await;
-        }
-    });
+    let pool = db::init_pool();
+    let webhook_publisher_addr = webhook_publisher::WebhookPublisher::initialize(pool.clone()).start();
+    let publisher_addr = publisher::Publisher::initialize(
+        pool.clone(),
+        webhook_publisher_addr,
+    ).start();
 
-    HttpServer::new(move || {
-        let pool = db::init_pool();
-        let webhook_publisher_addr = webhook_publisher::WebhookPublisher::initialize(pool.clone(), sender.clone()).start();
-        let publisher_addr = publisher::Publisher::initialize(
-            pool.clone(),
-            webhook_publisher_addr.clone(),
-        ).start();
+    let weak_publish_addr = publisher_addr.downgrade();
+
+    let server = HttpServer::new(move || {
         App::new()
             // enable logger
             .wrap(middleware::Logger::default())
-            .data(pool)
+            .data(pool.clone())
             .data(publisher_addr.clone())
             .service(web::resource("/").route(web::get().to(health_check)))
             // websocket route
@@ -393,6 +352,22 @@ async fn main() -> std::io::Result<()> {
     // start on 0.0.0.0:8080 for release and 127.0.0.1:8080
     // for development
     .bind("0.0.0.0:8080")?
-    .run()
-    .await
+    .run();
+
+    let srv = server.clone();
+    ctrlc::set_handler(move || {
+        /*
+            On shutdown, need to send messages to websockets
+            to send a shutdown request, therefore allowing
+            daemons to disconnect and then reconnect with
+            new server
+        */
+        match weak_publish_addr.upgrade() {
+            Some(addr) => addr.do_send(publisher::Shutdown()),
+            None => (),
+        }
+        executor::block_on(srv.stop(true));
+    }).expect("Error setting Ctrl-C handler");
+
+    server.await
 }

@@ -145,13 +145,12 @@ pub struct TopicType {
 pub fn get_topics<'a>(
     account_id: &'a str,
     conn: &PgConnection,
-) -> Vec<TopicType> {
+) -> Result<Vec<TopicType>, diesel::result::Error> {
     use crate::schema::topics::dsl;
 
     let result = dsl::topics
         .filter(dsl::account_id.eq(account_id))
-        .load::<models::Topic>(conn)
-        .expect("An error occurred");
+        .load::<models::Topic>(conn)?;
 
     let mut all_topics = Vec::new();
     for topic in result {
@@ -167,7 +166,7 @@ pub fn get_topics<'a>(
         );
     }
 
-    all_topics
+    Ok(all_topics)
 }
 
 pub fn create_topic<'a>(
@@ -354,7 +353,7 @@ pub struct WebhookTopic {
 pub fn get_webhook_topics<'a>(
     webhook_id: i32,
     conn: &PgConnection
-) -> Vec<WebhookTopic> {
+) -> Result<Vec<WebhookTopic>, diesel::result::Error> {
     use crate::schema::webhook_topics;
     use crate::schema::topics;
 
@@ -371,8 +370,7 @@ pub fn get_webhook_topics<'a>(
             topics::dsl::created_at,
             topics::dsl::updated_at
         ))
-        .load::<(i32, i32, String, String, Option<String>, SystemTime, SystemTime)>(conn)
-        .expect("An error occured.");
+        .load::<(i32, i32, String, String, Option<String>, SystemTime, SystemTime)>(conn)?;
 
     let mut all_topics = Vec::new();
     for topic in result {
@@ -389,7 +387,7 @@ pub fn get_webhook_topics<'a>(
         );
     }
 
-    all_topics
+    Ok(all_topics)
 }
 
 pub fn get_all_webhook_topics<'a>(conn: &PgConnection) -> Result<Vec<(String, String)>, diesel::result::Error>  {

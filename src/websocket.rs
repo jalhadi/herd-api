@@ -1,5 +1,4 @@
 use std::time::{Duration, Instant};
-use std::sync::Arc;
 use actix::prelude::*;
 use actix_web_actors::ws;
 use actix_web::web;
@@ -127,6 +126,22 @@ impl Handler<publisher::PublishMessage> for WebSocket {
             Ok(m) => ctx.text(m),
             Err(e) => println!("Error serializing message: {:?}", e),
         };
+    }
+}
+
+impl Handler<publisher::Shutdown> for WebSocket {
+    type Result = ();
+
+    fn handle(&mut self, _msg: publisher::Shutdown, ctx: &mut ws::WebsocketContext<Self>) -> Self::Result {
+        // Notify the client that the server is closing
+        // the connection because a new deployment is
+        //
+        let close_data = ws::CloseReason {
+            code: ws::CloseCode::Restart,
+            description: Some("new server being deployed".to_string()),
+        };
+
+        ctx.close(Some(close_data));
     }
 }
 

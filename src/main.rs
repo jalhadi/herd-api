@@ -276,7 +276,6 @@ async fn get_logs(
     let conn = pool.get().expect("Failed to get a db connection");
     let account_id: &str = r.headers().get("Account-Id").unwrap().to_str().unwrap();
 
-    println!("{:?}", query);
     let result = logging::paginated_logs(
         account_id,
         query.page,

@@ -90,7 +90,6 @@ impl WebSocket {
             // TODO: maybe call webapp here to update
             // certain account metrics every few
             // heartbeats
-
             ctx.ping(b"");
         });
     }

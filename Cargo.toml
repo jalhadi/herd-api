@@ -1,5 +1,5 @@
 [package]
-name = "graph-analytics"
+name = "herd-api"
 version = "0.1.0"
 authors = ["jalhadi <jalhadi@me.com>"]
 edition = "2018"

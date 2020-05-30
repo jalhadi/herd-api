@@ -822,27 +822,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "graph-analytics"
-version = "0.1.0"
-dependencies = [
- "actix",
- "actix-rt",
- "actix-web",
- "actix-web-actors",
- "actix-web-httpauth",
- "chrono",
- "ctrlc",
- "diesel",
- "diesel_migrations",
- "dotenv",
- "env_logger",
- "futures",
- "serde",
- "serde_json",
- "uuid",
-]
-
-[[package]]
 name = "h2"
 version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -868,6 +847,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "20564e78d53d2bb135c343b3f47714a56af2061f1c928fdb541dc7b9fdd94205"
 dependencies = [
  "unicode-segmentation",
+]
+
+[[package]]
+name = "herd-api"
+version = "0.1.0"
+dependencies = [
+ "actix",
+ "actix-rt",
+ "actix-web",
+ "actix-web-actors",
+ "actix-web-httpauth",
+ "chrono",
+ "ctrlc",
+ "diesel",
+ "diesel_migrations",
+ "dotenv",
+ "env_logger",
+ "futures",
+ "serde",
+ "serde_json",
+ "uuid",
 ]
 
 [[package]]

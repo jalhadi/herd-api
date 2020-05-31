@@ -1,4 +1,14 @@
 table! {
+    accounts (id) {
+        id -> Varchar,
+        secret_key -> Varchar,
+        cipher_iv -> Varchar,
+        created_at -> Timestamp,
+        updated_at -> Timestamp,
+    }
+}
+
+table! {
     device_types (id) {
         id -> Varchar,
         account_id -> Varchar,
@@ -65,6 +75,7 @@ joinable!(webhook_topics -> topics (topic_id));
 joinable!(webhook_topics -> webhooks (webhook_id));
 
 allow_tables_to_appear_in_same_query!(
+    accounts,
     device_types,
     devices,
     logs,

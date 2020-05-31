@@ -1,6 +1,9 @@
 #[macro_use]
 extern crate diesel;
 extern crate ctrlc;
+extern crate ring;
+extern crate data_encoding;
+extern crate rand;
 use std::any::Any;
 use std::sync::Arc;
 
@@ -11,7 +14,6 @@ use actix_web::{middleware, web, App, Error, HttpRequest, HttpResponse, HttpServ
 use actix_web_actors::ws;
 use serde::{Deserialize};
 use futures::executor;
-use actix_web_httpauth::middleware::HttpAuthentication;
 
 mod auth;
 mod db;
@@ -22,6 +24,7 @@ mod webhook_publisher;
 mod utils;
 mod logging;
 mod pagination;
+mod account;
 
 pub mod schema;
 pub mod models;
@@ -50,17 +53,18 @@ async fn health_check() -> HttpResponse {
 
 // TODO: better error handling
 async fn ws_index(
+    auth: BasicAuth,
     pool: web::Data<db::DbPool>,
     r: HttpRequest,
     stream: web::Payload,
     publish: web::Data<Addr<publisher::Publisher>>
 ) -> Result<HttpResponse, Error> {
     // Validate websocket connection
-    let account_id = auth::authenticate_websocket_connection(&r).await?;
+    let conn = pool.get().expect("Failed to get a db connection");
+    let account_id = auth::authenticate_connection(auth, &conn)?;
 
     let device_id: &str = r.headers().get("Device-Id").unwrap().to_str().unwrap();
     let device_type_id: &str = r.headers().get("Device-Type-Id").unwrap().to_str().unwrap();
-    let conn = pool.get().expect("Failed to get a db connection");
 
     let relation_exists = db::device_type_relation_exists(
         &account_id,
@@ -286,15 +290,37 @@ async fn get_logs(
     return_result_body(result)
 }
 
+async fn get_api_key(pool: web::Data<db::DbPool>, r: HttpRequest) -> Result<HttpResponse, Error> {
+    let conn = pool.get().expect("Failed to get a db connection");
+    let account_id: &str = r.headers().get("Account-Id").unwrap().to_str().unwrap();
+
+    let result = account::get_api_key(account_id, &conn);
+    return_result_body(result)
+}
+
+async fn create_account(pool: web::Data<db::DbPool>, r: HttpRequest) -> Result<HttpResponse, Error> {
+    let conn = pool.get().expect("Failed to get a db connection");
+    let account_id: &str = r.headers().get("Account-Id").unwrap().to_str().unwrap();
+
+    match account::create_account(account_id, &conn) {
+        Ok(_) => Ok(HttpResponse::Ok().finish()),
+        Err(_) => {
+            Ok(HttpResponse::BadRequest().finish())
+        },
+    }
+}
+
 use actix_web::dev::ServiceRequest;
 use actix_web_httpauth::extractors::basic::BasicAuth;
 
 // TODO: not sure the best way to authenticate from rails server
 async fn validator(
     req: ServiceRequest,
-    credentials: BasicAuth,
+    auth: BasicAuth,
+    pool: web::Data<db::DbPool>
 ) -> Result<ServiceRequest, Error> {
-    let res = auth::authenticate_connection(credentials).await;
+    let conn = pool.get().expect("Failed to get a db connection");
+    let res = auth::authenticate_connection(auth, &conn);
     match res {
         Ok(_) => Ok(req),
         Err(e) => Err(e)
@@ -346,6 +372,10 @@ async fn main() -> std::io::Result<()> {
                 .route(web::delete().to(delete_webhook_topic)))
             .service(web::resource("/logs")
                 .route(web::get().to(get_logs)))
+            .service(web::resource("/api_key")
+                .route(web::get().to(get_api_key)))
+            .service(web::resource("/account")
+                .route(web::post().to(create_account)))
     })
     // TODO: add --release flag to binary such that it can
     // start on 0.0.0.0:8080 for release and 127.0.0.1:8080

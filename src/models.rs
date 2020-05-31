@@ -4,6 +4,7 @@ use super::schema::topics;
 use super::schema::webhooks;
 use super::schema::webhook_topics;
 use super::schema::logs;
+use super::schema::accounts;
 
 use std::time::SystemTime;
 use serde::{Serialize};
@@ -110,4 +111,21 @@ pub struct NewLog<'a> {
     pub account_id: &'a str,
     pub level: &'a str,
     pub data: Option<Value>,
+}
+
+#[derive(Queryable)]
+pub struct Account {
+    pub id: String,
+    pub secret_key: String,
+    pub cipher_iv: String,
+    pub created_at: SystemTime,
+    pub updated_at: SystemTime,
+}
+
+#[derive(Insertable, Debug)]
+#[table_name = "accounts"]
+pub struct NewAccount<'a> {
+    pub id: &'a str,
+    pub secret_key: &'a str,
+    pub cipher_iv: &'a str,
 }

@@ -10,7 +10,11 @@ use std::sync::Arc;
 use serde_json::Value;
 use actix;
 use actix::prelude::*;
-use actix_web::{middleware, web, App, Error, HttpRequest, HttpResponse, HttpServer};
+use actix_web::dev::ServiceRequest;
+use actix_web_httpauth::extractors::bearer::BearerAuth;
+use actix_web_httpauth::extractors::basic::BasicAuth;
+use actix_web_httpauth::middleware::HttpAuthentication;
+use actix_web::{middleware, web, App, error, Error, HttpRequest, HttpResponse, HttpServer};
 use actix_web_actors::ws;
 use serde::{Deserialize};
 use futures::executor;
@@ -210,7 +214,6 @@ async fn webhooks_post(pool: web::Data<db::DbPool>, r: HttpRequest, body: web::J
 
 async fn get_webhook_topics(pool: web::Data<db::DbPool>, r: HttpRequest) -> Result<HttpResponse, Error> {
     let conn = pool.get().expect("Failed to get a db connection");
-    let account_id: &str = r.headers().get("Account-Id").unwrap().to_str().unwrap();
     let webhook_id = r.match_info().query("id").parse().unwrap();
 
     let result = db::get_webhook_topics(webhook_id, &conn);
@@ -231,7 +234,7 @@ struct WebhookTopicsPost {
     topic_ids: Vec<String>,
 }
 
-async fn webhook_topics_post(pool: web::Data<db::DbPool>, r: HttpRequest, body: web::Json<WebhookTopicsPost>) -> Result<HttpResponse, Error> {
+async fn webhook_topics_post(pool: web::Data<db::DbPool>, body: web::Json<WebhookTopicsPost>) -> Result<HttpResponse, Error> {
     let conn = pool.get().expect("Failed to get a db connection");
     
     // TODO: check that the current connection is authorized to add
@@ -247,12 +250,6 @@ async fn webhook_topics_post(pool: web::Data<db::DbPool>, r: HttpRequest, body: 
     }
 
     Ok(HttpResponse::Ok().finish())
-    // match create_webhook_topic_result {
-    //     Ok(result) => Ok(HttpResponse::Ok().content_type("application/json").body(serde_json::to_string(&result).unwrap())),
-    //     Err(_) => {
-    //         Ok(HttpResponse::BadRequest().finish())
-    //     },
-    // }
 }
 
 async fn webhook_delete(pool: web::Data<db::DbPool>, r: HttpRequest) -> Result<HttpResponse, Error> {
@@ -310,20 +307,25 @@ async fn create_account(pool: web::Data<db::DbPool>, r: HttpRequest) -> Result<H
     }
 }
 
-use actix_web::dev::ServiceRequest;
-use actix_web_httpauth::extractors::basic::BasicAuth;
-
-// TODO: not sure the best way to authenticate from rails server
-async fn validator(
+async fn validator<'a>(
     req: ServiceRequest,
-    auth: BasicAuth,
-    pool: web::Data<db::DbPool>
+    _credentials: BearerAuth,
 ) -> Result<ServiceRequest, Error> {
-    let conn = pool.get().expect("Failed to get a db connection");
-    let res = auth::authenticate_connection(auth, &conn);
-    match res {
-        Ok(_) => Ok(req),
-        Err(e) => Err(e)
+    let account_id: &str = req.headers().get("Account-Id").unwrap().to_str().unwrap();
+    let time: &str = req.headers().get("Time").unwrap().to_str().unwrap();
+    let path: &str = &req.uri().to_string();
+    let hmac_signature: &str = req.headers().get("Herd-Webapp-Signature").unwrap().to_str().unwrap();
+
+    let signature_good = auth::verify_hmac_sigature(
+        path,
+        account_id,
+        time,
+        hmac_signature
+    );
+
+    match signature_good {
+        true => Ok(req),
+        false => Err(error::ErrorUnauthorized("Unauthorized"))
     }
 }
 
@@ -344,7 +346,6 @@ async fn main() -> std::io::Result<()> {
 
     let server = HttpServer::new(move || {
         App::new()
-            // enable logger
             .wrap(middleware::Logger::default())
             .data(pool.clone())
             .data(publisher_addr.clone())
@@ -352,30 +353,40 @@ async fn main() -> std::io::Result<()> {
             // websocket route
             .service(web::resource("/ws/").route(web::get().to(ws_index)))
             .service(web::resource("/message").route(web::post().to(message)))
-            // .wrap(HttpAuthentication::basic(validator))
-            .service(web::resource("/device_types")
-                .route(web::post().to(device_types_post))
-                .route(web::get().to(get_device_types)))
-            .service(web::resource("/topics")
-                .route(web::get().to(get_topics))
-                .route(web::post().to(topics_post)))
-            .service(web::resource("/webhooks")
-                .route(web::get().to(get_webhooks))
-                .route(web::post().to(webhooks_post)))
-            .service(web::resource("/webhooks/{id}")
-                .route(web::delete().to(webhook_delete)))
-            .service(web::resource("/webhooks/{id}/topics")
-                .route(web::get().to(get_webhook_topics)))
-            .service(web::resource("/webhook_topics")
-                .route(web::post().to(webhook_topics_post)))
-            .service(web::resource("/webhook_topics/{id}")
-                .route(web::delete().to(delete_webhook_topic)))
-            .service(web::resource("/logs")
-                .route(web::get().to(get_logs)))
-            .service(web::resource("/api_key")
-                .route(web::get().to(get_api_key)))
-            .service(web::resource("/account")
-                .route(web::post().to(create_account)))
+            .service(
+                web::scope("/")
+                /*
+                    Not ideal, but currently using the HttpAuthentication
+                    middlewares. They require that the authorization header
+                    is present, so currently adding one, even though it's not
+                    used. Lower priority, but ideally make own middleware
+                    to then remove the unsued BearerAuth parameter in validator.
+                */
+                .wrap(HttpAuthentication::bearer(validator))
+                .service(web::resource("/device_types")
+                    .route(web::post().to(device_types_post))
+                    .route(web::get().to(get_device_types)))
+                .service(web::resource("/topics")
+                    .route(web::get().to(get_topics))
+                    .route(web::post().to(topics_post)))
+                .service(web::resource("/webhooks")
+                    .route(web::get().to(get_webhooks))
+                    .route(web::post().to(webhooks_post)))
+                .service(web::resource("/webhooks/{id}")
+                    .route(web::delete().to(webhook_delete)))
+                .service(web::resource("/webhooks/{id}/topics")
+                    .route(web::get().to(get_webhook_topics)))
+                .service(web::resource("/webhook_topics")
+                    .route(web::post().to(webhook_topics_post)))
+                .service(web::resource("/webhook_topics/{id}")
+                    .route(web::delete().to(delete_webhook_topic)))
+                .service(web::resource("/logs")
+                    .route(web::get().to(get_logs)))
+                .service(web::resource("/api_key")
+                    .route(web::get().to(get_api_key)))
+                .service(web::resource("/account")
+                    .route(web::post().to(create_account)))
+            )
     })
     // TODO: add --release flag to binary such that it can
     // start on 0.0.0.0:8080 for release and 127.0.0.1:8080

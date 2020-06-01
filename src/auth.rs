@@ -1,9 +1,13 @@
 use diesel::prelude::*;
 use openssl::symm::{encrypt, Cipher};
-use data_encoding::HEXUPPER;
+use data_encoding::{HEXUPPER, HEXLOWER};
 use actix_web::{error, Error};
 use actix_web_httpauth::extractors::basic::BasicAuth;
 use diesel::pg::PgConnection;
+use openssl::memcmp;
+use openssl::hash::MessageDigest;
+use openssl::pkey::PKey;
+use openssl::sign::Signer;
 
 use crate::account::{TEMP_KEY};
 use crate::models;
@@ -36,4 +40,21 @@ pub fn authenticate_connection(auth: BasicAuth, conn: &PgConnection) -> Result<S
         true => Ok(auth.user_id().to_string()),
         false => Err(error::ErrorUnauthorized("Unauthorized"))
     }
+}
+
+pub fn verify_hmac_sigature<'a>(
+    url_path: &'a str,
+    account_id: &'a str,
+    time: &'a str,
+    signature: &'a str,
+) -> bool {
+    // TODO: STORE SOMEWHERE
+    let key = PKey::hmac(b"").unwrap();
+    let mut signer = Signer::new(MessageDigest::sha256(), &key).unwrap();
+    signer.update(url_path.as_bytes()).unwrap();
+    signer.update(account_id.as_bytes()).unwrap();
+    signer.update(time.as_bytes()).unwrap();
+    let hmac = signer.sign_to_vec().unwrap();
+
+    memcmp::eq(&hmac, &HEXLOWER.decode(signature.as_bytes()).unwrap())
 }

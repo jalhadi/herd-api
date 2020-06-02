@@ -351,6 +351,7 @@ async fn main() -> std::io::Result<()> {
     env_logger::init();
     dotenv::dotenv().ok();
 
+    // Comment to force rebuild
     let hmac_key = env::var("HMAC_KEY").expect("HMAC_KEY must be set");
     let api_cipher_key = env::var("API_CIPHER_KEY").expect("API_CIPHER_KEY must be set");
 

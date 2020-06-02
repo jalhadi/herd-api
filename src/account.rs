@@ -1,7 +1,7 @@
 use serde::{Deserialize};
 use diesel::prelude::*;
 use diesel::pg::PgConnection;
-use data_encoding::HEXUPPER;
+use data_encoding::{HEXUPPER, HEXLOWER};
 use ring::rand::SecureRandom;
 use openssl::symm::{encrypt, decrypt, Cipher};
 use serde::Serialize;
@@ -10,10 +10,6 @@ use rand::distributions::Alphanumeric;
 
 use crate::models;
 
-// 256 bit string
-// TODO: generate a key and store somewhere
-pub const TEMP_KEY: &'static [u8; 32] = b"\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0A\x0B\x0C\x0D\x0E\x0F";
-
 #[derive(Deserialize, Debug)]
 pub struct SignupParams{
     pub email: String,
@@ -21,7 +17,11 @@ pub struct SignupParams{
     pub password_confirmation: String,
 }
 
-pub fn create_account<'a>(account_id: &'a str, conn: &PgConnection) -> Result<(), &'static str> {
+pub fn create_account<'a>(
+    account_id: &'a str,
+    api_cipher_key: &'a str,
+    conn: &PgConnection,
+) -> Result<(), &'static str> {
     let rng = ring::rand::SystemRandom::new();
 
     let api_key: String = rand::thread_rng()
@@ -35,7 +35,7 @@ pub fn create_account<'a>(account_id: &'a str, conn: &PgConnection) -> Result<()
     let cipher = Cipher::aes_256_cbc();
     let ciphertext = encrypt(
         cipher,
-        TEMP_KEY,
+        &HEXLOWER.decode(api_cipher_key.as_bytes()).unwrap(),
         Some(&iv),
         &api_key.as_bytes()
     ).expect("Error generating ciphertext");
@@ -63,7 +63,11 @@ pub struct ApiKeyResult {
     pub api_key: String,
 }
 
-pub fn get_api_key<'a>(account_id: &'a str, conn: &PgConnection) -> Result<ApiKeyResult, diesel::result::Error> {
+pub fn get_api_key<'a>(
+    account_id: &'a str,
+    api_cipher_key: &'a str,
+    conn: &PgConnection,
+) -> Result<ApiKeyResult, diesel::result::Error> {
     use crate::schema::accounts::dsl;
 
     let result = dsl::accounts
@@ -75,7 +79,7 @@ pub fn get_api_key<'a>(account_id: &'a str, conn: &PgConnection) -> Result<ApiKe
     let iv = &HEXUPPER.decode(result.cipher_iv.as_bytes()).unwrap();
     let decrypted_key = decrypt(
         cipher,
-        TEMP_KEY,
+        &HEXLOWER.decode(api_cipher_key.as_bytes()).unwrap(),
         Some(iv),
         data
     ).unwrap();

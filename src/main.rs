@@ -6,6 +6,7 @@ extern crate data_encoding;
 extern crate rand;
 use std::any::Any;
 use std::sync::Arc;
+use std::env;
 
 use serde_json::Value;
 use actix;
@@ -61,11 +62,12 @@ async fn ws_index(
     pool: web::Data<db::DbPool>,
     r: HttpRequest,
     stream: web::Payload,
-    publish: web::Data<Addr<publisher::Publisher>>
+    publish: web::Data<Addr<publisher::Publisher>>,
+    api_cipher_key: web::Data<ApiCipherKey>,
 ) -> Result<HttpResponse, Error> {
     // Validate websocket connection
     let conn = pool.get().expect("Failed to get a db connection");
-    let account_id = auth::authenticate_connection(auth, &conn)?;
+    let account_id = auth::authenticate_connection(auth, &api_cipher_key.0, &conn)?;
 
     let device_id: &str = r.headers().get("Device-Id").unwrap().to_str().unwrap();
     let device_type_id: &str = r.headers().get("Device-Type-Id").unwrap().to_str().unwrap();
@@ -287,19 +289,27 @@ async fn get_logs(
     return_result_body(result)
 }
 
-async fn get_api_key(pool: web::Data<db::DbPool>, r: HttpRequest) -> Result<HttpResponse, Error> {
+async fn get_api_key(
+    pool: web::Data<db::DbPool>,
+    api_cipher_key: web::Data<ApiCipherKey>,
+    r: HttpRequest,
+) -> Result<HttpResponse, Error> {
     let conn = pool.get().expect("Failed to get a db connection");
     let account_id: &str = r.headers().get("Account-Id").unwrap().to_str().unwrap();
 
-    let result = account::get_api_key(account_id, &conn);
+    let result = account::get_api_key(account_id, &api_cipher_key.0, &conn);
     return_result_body(result)
 }
 
-async fn create_account(pool: web::Data<db::DbPool>, r: HttpRequest) -> Result<HttpResponse, Error> {
+async fn create_account(
+    pool: web::Data<db::DbPool>,
+    api_cipher_key: web::Data<ApiCipherKey>,
+    r: HttpRequest,
+) -> Result<HttpResponse, Error> {
     let conn = pool.get().expect("Failed to get a db connection");
     let account_id: &str = r.headers().get("Account-Id").unwrap().to_str().unwrap();
 
-    match account::create_account(account_id, &conn) {
+    match account::create_account(account_id, &api_cipher_key.0, &conn) {
         Ok(_) => Ok(HttpResponse::Ok().finish()),
         Err(_) => {
             Ok(HttpResponse::BadRequest().finish())
@@ -307,10 +317,15 @@ async fn create_account(pool: web::Data<db::DbPool>, r: HttpRequest) -> Result<H
     }
 }
 
+struct HmacKey(String);
+struct ApiCipherKey(String);
+
 async fn validator<'a>(
     req: ServiceRequest,
     _credentials: BearerAuth,
 ) -> Result<ServiceRequest, Error> {
+    let hmac_key = req.app_data::<HmacKey>().unwrap().into_inner();
+
     let account_id: &str = req.headers().get("Account-Id").unwrap().to_str().unwrap();
     let time: &str = req.headers().get("Time").unwrap().to_str().unwrap();
     let path: &str = &req.uri().to_string();
@@ -320,7 +335,8 @@ async fn validator<'a>(
         path,
         account_id,
         time,
-        hmac_signature
+        hmac_signature,
+        &hmac_key.0
     );
 
     match signature_good {
@@ -334,6 +350,9 @@ async fn main() -> std::io::Result<()> {
     std::env::set_var("RUST_LOG", "actix_server=info,actix_web=info");
     env_logger::init();
     dotenv::dotenv().ok();
+
+    let hmac_key = env::var("HMAC_KEY").expect("HMAC_KEY must be set");
+    let api_cipher_key = env::var("API_CIPHER_KEY").expect("API_CIPHER_KEY must be set");
 
     let pool = db::init_pool();
     let webhook_publisher_addr = webhook_publisher::WebhookPublisher::initialize(pool.clone()).start();
@@ -349,6 +368,8 @@ async fn main() -> std::io::Result<()> {
             .wrap(middleware::Logger::default())
             .data(pool.clone())
             .data(publisher_addr.clone())
+            .data(HmacKey(hmac_key.clone()))
+            .data(ApiCipherKey(api_cipher_key.clone()))
             .service(web::resource("/").route(web::get().to(health_check)))
             // websocket route
             .service(web::resource("/ws/").route(web::get().to(ws_index)))

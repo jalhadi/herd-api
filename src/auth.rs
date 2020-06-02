@@ -12,7 +12,12 @@ use openssl::sign::Signer;
 use crate::account::{TEMP_KEY};
 use crate::models;
 
-fn validate_api_key<'a>(account_id: &'a str, api_key: &'a str, conn: &PgConnection) -> bool {
+fn validate_api_key<'a>(
+    account_id: &'a str,
+    api_key: &'a str,
+    api_cipher_key: &'a str,
+    conn: &PgConnection,
+) -> bool {
     use crate::schema::accounts::dsl;
 
     let result = dsl::accounts
@@ -24,7 +29,7 @@ fn validate_api_key<'a>(account_id: &'a str, api_key: &'a str, conn: &PgConnecti
     let iv = &HEXUPPER.decode(result.cipher_iv.as_bytes()).unwrap();
     let ciphertext = encrypt(
         cipher,
-        TEMP_KEY,
+        api_cipher_key.as_bytes(),
         Some(&iv),
         &api_key.as_bytes()
     ).expect("Error generating ciphertext");
@@ -35,8 +40,8 @@ fn validate_api_key<'a>(account_id: &'a str, api_key: &'a str, conn: &PgConnecti
     return false;
 }
 
-pub fn authenticate_connection(auth: BasicAuth, conn: &PgConnection) -> Result<String, Error> {
-    match validate_api_key(&auth.user_id(), &auth.password().unwrap(), conn) {
+pub fn authenticate_connection<'a>(auth: BasicAuth, api_cipher_key: &'a str, conn: &PgConnection) -> Result<String, Error> {
+    match validate_api_key(&auth.user_id(), &auth.password().unwrap(), api_cipher_key, conn) {
         true => Ok(auth.user_id().to_string()),
         false => Err(error::ErrorUnauthorized("Unauthorized"))
     }
@@ -47,9 +52,10 @@ pub fn verify_hmac_sigature<'a>(
     account_id: &'a str,
     time: &'a str,
     signature: &'a str,
+    hmac_key: &'a str,
 ) -> bool {
     // TODO: STORE SOMEWHERE
-    let key = PKey::hmac(b"").unwrap();
+    let key = PKey::hmac(hmac_key.as_bytes()).unwrap();
     let mut signer = Signer::new(MessageDigest::sha256(), &key).unwrap();
     signer.update(url_path.as_bytes()).unwrap();
     signer.update(account_id.as_bytes()).unwrap();

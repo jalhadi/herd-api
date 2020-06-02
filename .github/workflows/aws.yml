@@ -60,7 +60,7 @@ jobs:
           # Build a docker container and
           # push it to ECR so that it can
           # be deployed to ECS.
-          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG --build-arg DATABASE_URL_ARG=${{ secrets.DATABASE_URL_ARG }} HMAC_KEY_ARG=${{ secrets.HMAC_KEY_ARG }} API_CIPHER_KEY_ARG=${{ secrets.API_CIPHER_KEY_ARG }} .
+          docker build -t $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG --build-arg DATABASE_URL_ARG=${{ secrets.DATABASE_URL_ARG }} --build-arg HMAC_KEY_ARG=${{ secrets.HMAC_KEY_ARG }} --build-arg API_CIPHER_KEY_ARG=${{ secrets.API_CIPHER_KEY_ARG }} .
           docker push $ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG
           echo "::set-output name=image::$ECR_REGISTRY/$ECR_REPOSITORY:$IMAGE_TAG"
 

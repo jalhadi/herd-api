@@ -9,7 +9,6 @@ use openssl::hash::MessageDigest;
 use openssl::pkey::PKey;
 use openssl::sign::Signer;
 
-use crate::account::{TEMP_KEY};
 use crate::models;
 
 fn validate_api_key<'a>(

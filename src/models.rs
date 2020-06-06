@@ -120,6 +120,8 @@ pub struct Account {
     pub cipher_iv: String,
     pub created_at: SystemTime,
     pub updated_at: SystemTime,
+    pub max_requests_per_minute: i32,
+    pub max_connections: i32,
 }
 
 #[derive(Insertable, Debug)]

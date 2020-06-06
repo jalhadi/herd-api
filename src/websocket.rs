@@ -21,7 +21,7 @@ pub struct WebSocket {
     hb: Instant,
     publisher: Addr<publisher::Publisher>,
     rate_limit_struct: RateLimit,
-    rate_limit: u64,
+    rate_limit: i32,
     pool: web::Data<DbPool>,
 }
 
@@ -44,7 +44,17 @@ impl Actor for WebSocket {
             .into_actor(self)
             .then(|res, _, ctx| {
                 match res {
-                    Ok(_) => (),
+                    Ok(res) => {
+                        match res {
+                            Ok(_) => (),
+                            Err(_) => {
+                                // if the result of the publisher
+                                // connect handler is an error, close
+                                // the connection
+                                ctx.stop();
+                            },
+                        };
+                    },
                     // something is wrong with the websocket
                     _ => ctx.stop(),
                 }
@@ -59,6 +69,7 @@ impl WebSocket {
         account_id: String,
         device_id: String,
         device_type_id: String,
+        max_requests_per_minute: i32,
         publisher: Addr<publisher::Publisher>,
         pool: web::Data<DbPool>,
     ) -> Self {
@@ -74,7 +85,7 @@ impl WebSocket {
             // updates their account to allow higher limit,
             // it should be reflected without having to restart
             // connection.
-            rate_limit: 100,
+            rate_limit: max_requests_per_minute,
             pool
         }
     }

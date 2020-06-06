@@ -14,6 +14,7 @@ use crate::webhook_publisher::{WebhookPublisher};
 use crate::db;
 use crate::db::DbPool;
 use crate::logging;
+use crate::account;
 
 const TOPIC_RELATIONS_UPDATE_INTERVAL: Duration = Duration::from_secs(60);
 
@@ -43,7 +44,7 @@ pub struct RegisterTopics {
 }
 
 #[derive(Message)]
-#[rtype(result = "()")]
+#[rtype(result = "Result<(), &'static str>")]
 pub struct Connect {
     pub account_id: String,
     pub device_type_id: String,
@@ -59,12 +60,33 @@ pub struct Disconnect{
     pub device_id: String,
 }
 
+#[derive(Hash, Eq, PartialEq, Clone, Serialize)]
+pub struct Device {
+    device_id: String,
+    // Including device_type_id is not strictly necessary,
+    // adding it here just saves a query in the future,
+    // but maybe that should be done now?
+    device_type_id: String,
+}
+
+#[derive(Clone)]
+pub struct Account {
+    // Ideally just store a hashset of device_ids
+    // and query the device_type_id
+    pub devices: HashSet<Device>,
+    pub max_connections: usize,
+}
+
 // When a server is being taken down and another
 // put up, need to close the websocket connections
 // and tell them to reopen
 #[derive(Message)]
 #[rtype(result = "()")]
 pub struct Shutdown();
+
+#[derive(Message)]
+#[rtype(result = "Option<HashSet<Device>>")]
+pub struct GetAccountActivity(pub String);
 
 pub struct Publisher {
     pool: DbPool,
@@ -74,7 +96,10 @@ pub struct Publisher {
     // topic_id to HashSet of device_ids
     topics: HashMap<String, HashSet<String>>,
     // account_id to HashSet of topic_ids
-    topic_relations: HashMap<String, HashSet<String>>
+    topic_relations: HashMap<String, HashSet<String>>,
+    // active account connections
+    // account_id -> Account
+    accounts: HashMap<String, Account>,
 }
 
 impl Publisher {
@@ -85,6 +110,7 @@ impl Publisher {
             sessions: HashMap::new(),
             topics: HashMap::new(),
             topic_relations: HashMap::new(),
+            accounts: HashMap::new(),
         }
     }
 
@@ -137,9 +163,86 @@ impl Actor for Publisher {
 }
 
 impl Handler<Connect> for Publisher {
-    type Result = ();
+    type Result = Result<(), &'static str>;
 
     fn handle(&mut self, msg: Connect, _: &mut Context<Self>) -> Self::Result {
+        match self.accounts.get_mut(&msg.account_id) {
+            Some(account) => {
+                if account.devices.len() >= account.max_connections {
+                    logging::log(
+                        &msg.account_id,
+                        logging::LogLevel::Error,
+                        json!({
+                            "device_id": msg.device_id,
+                            "device_type_id": msg.device_type_id,
+                            "message": "max connections error"
+                        }),
+                        &self.pool
+                    );
+                    return Err("Exceeded number of connections");
+                }
+                account.devices.insert(Device {
+                    device_id: msg.device_id.clone(),
+                    device_type_id: msg.device_type_id.clone(),
+                });
+            },
+            None => {
+                let conn = self.pool.get();
+                let conn = match conn {
+                    Ok(c) => c,
+                    Err(_) => {
+                        logging::log(
+                            &msg.account_id,
+                            logging::LogLevel::Error,
+                            json!({
+                                "device_id": msg.device_id,
+                                "device_type_id": msg.device_type_id,
+                                "message": "connection error"
+                            }),
+                            &self.pool
+                        );
+                        return Err("Unable to get connection");
+                    },
+                };
+
+                let account = account::get_account(
+                    &msg.account_id,
+                    &conn,
+                );
+                let account = match account {
+                    Ok(a) => a,
+                    Err(_) => {
+                        logging::log(
+                            &msg.account_id,
+                            logging::LogLevel::Error,
+                            json!({
+                                "device_id": msg.device_id,
+                                "device_type_id": msg.device_type_id,
+                                "message": "connection error"
+                            }),
+                            &self.pool
+                        );
+                        return Err("Unable to fetch account");
+                    },
+                };
+
+                let mut devices = HashSet::new();
+                devices.insert(Device {
+                    device_id: msg.device_id.clone(),
+                    device_type_id: msg.device_type_id.clone(),
+                });
+                let new_account = Account {
+                    devices,
+                    max_connections: account.max_connections as usize,
+                };
+                self.accounts.insert(
+                    msg.account_id.clone(),
+                    new_account,
+                );
+            },
+        }
+        self.sessions.insert(msg.device_id.clone(), msg.addr);
+
         logging::log(
             &msg.account_id,
             logging::LogLevel::Info,
@@ -151,7 +254,7 @@ impl Handler<Connect> for Publisher {
             &self.pool
         );
 
-        self.sessions.insert(msg.device_id.clone(), msg.addr);
+        Ok(())
     }
 }
 
@@ -197,6 +300,21 @@ impl Handler<Disconnect> for Publisher {
             }),
             &self.pool
         );
+        match self.accounts.get_mut(&msg.account_id) {
+            Some(account) => {
+                account.devices.remove(&Device {
+                    device_id: msg.device_id.clone(),
+                    device_type_id: msg.device_type_id.clone()
+                });
+            },
+            None => {
+                eprintln!(
+                    "{} closing for account {}, but no account struct in publisher.",
+                    &msg.device_id,
+                    &msg.account_id,
+                );
+            }
+        }
 
         self.sessions.remove(&msg.device_id);
     }
@@ -291,6 +409,17 @@ impl Handler<PublishMessage> for Publisher {
                 None => continue,
             };
             addr.do_send(msg.clone());
+        }
+    }
+}
+
+impl Handler<GetAccountActivity> for Publisher {
+    type Result = Option<HashSet<Device>>;
+
+    fn handle(&mut self, msg: GetAccountActivity, _ctx: &mut Context<Self>) -> Self::Result {
+        match self.accounts.get(&msg.0) {
+            Some(account) => Some(account.devices.clone()),
+            None => None,
         }
     }
 }

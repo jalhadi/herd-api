@@ -1,0 +1,3 @@
+ALTER TABLE accounts
+ADD COLUMN max_requests_per_minute INTEGER NOT NULL DEFAULT 60,
+ADD COLUMN max_connections INTEGER NOT NULL DEFAULT 5;

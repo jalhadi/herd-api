@@ -28,7 +28,7 @@ fn validate_api_key<'a>(
     let iv = &HEXUPPER.decode(result.cipher_iv.as_bytes()).unwrap();
     let ciphertext = encrypt(
         cipher,
-        api_cipher_key.as_bytes(),
+        &HEXLOWER.decode(api_cipher_key.as_bytes()).unwrap(),
         Some(&iv),
         &api_key.as_bytes()
     ).expect("Error generating ciphertext");

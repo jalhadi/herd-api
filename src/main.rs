@@ -6,6 +6,7 @@ extern crate data_encoding;
 extern crate rand;
 use std::any::Any;
 use std::sync::Arc;
+use std::collections::{HashSet};
 use std::env;
 
 use serde_json::Value;
@@ -43,9 +44,13 @@ fn return_result<T: Any>(result: Result<T, diesel::result::Error>) -> Result<Htt
     }
 }
 
+fn return_body<T: serde::Serialize>(data: T) -> Result<HttpResponse, Error> {
+    Ok(HttpResponse::Ok().content_type("application/json").body(serde_json::to_string(&data).unwrap()))
+}
+
 fn return_result_body<T: serde::Serialize>(result: Result<T, diesel::result::Error>) -> Result<HttpResponse, Error> {
     match result {
-        Ok(res) => Ok(HttpResponse::Ok().content_type("application/json").body(serde_json::to_string(&res).unwrap())),
+        Ok(res) => return_body(res),
         Err(_) => {
             Ok(HttpResponse::BadRequest().finish())
         },
@@ -85,6 +90,8 @@ async fn ws_index(
         }
     }
 
+    let account = account::get_account(&account_id, &conn).expect("Failed to get account.");
+
     db::create_device(
         device_id,
         device_type_id,
@@ -95,6 +102,7 @@ async fn ws_index(
         account_id,
         device_id.to_string(),
         device_type_id.to_string(),
+        account.max_requests_per_minute,
         publish.get_ref().clone(),
         pool.clone(),
     ), &r, stream);
@@ -317,6 +325,33 @@ async fn create_account(
     }
 }
 
+async fn get_account(
+    pool: web::Data<db::DbPool>,
+    r: HttpRequest,
+) -> Result<HttpResponse, Error> {
+    let conn = pool.get().expect("Failed to get a db connection");
+    let account_id: &str = r.headers().get("Account-Id").unwrap().to_str().unwrap();
+
+    let result = account::get_account(account_id, &conn);
+    return_result_body(result)
+}
+
+async fn get_account_activity(
+    publish: web::Data<Addr<publisher::Publisher>>,
+    r: HttpRequest,
+) -> Result<HttpResponse, Error> {
+    let account_id: &str = r.headers().get("Account-Id").unwrap().to_str().unwrap();
+
+    let maybe_activity = publish.send(publisher::GetAccountActivity(account_id.to_owned())).await;
+    match maybe_activity {
+        Ok(some_activity) => match some_activity {
+            Some(activity) => return_body(activity),
+            None => return_body(HashSet::<publisher::Device>::new()),
+        },
+        Err(_) => Ok(HttpResponse::BadRequest().finish()),
+    }
+}
+
 struct HmacKey(String);
 struct ApiCipherKey(String);
 
@@ -407,7 +442,10 @@ async fn main() -> std::io::Result<()> {
                 .service(web::resource("/api_key")
                     .route(web::get().to(get_api_key)))
                 .service(web::resource("/account")
+                    .route(web::get().to(get_account))
                     .route(web::post().to(create_account)))
+                .service(web::resource("/active_devices")
+                    .route(web::get().to(get_account_activity)))
             )
     })
     // TODO: add --release flag to binary such that it can

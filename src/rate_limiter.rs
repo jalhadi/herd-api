@@ -5,7 +5,7 @@ use std::time::SystemTime;
 #[derive(Debug)]
 pub struct RateLimit {
     pub current_window: u64,
-    pub requests: u64,
+    pub requests: i32,
 }
 
 fn get_time_bucket() -> u64 {

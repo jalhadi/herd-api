@@ -5,6 +5,8 @@ table! {
         cipher_iv -> Varchar,
         created_at -> Timestamp,
         updated_at -> Timestamp,
+        max_requests_per_minute -> Int4,
+        max_connections -> Int4,
     }
 }
 
